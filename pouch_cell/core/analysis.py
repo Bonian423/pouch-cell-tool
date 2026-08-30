@@ -49,6 +49,14 @@ def tab_heating_analysis(
     """
     from .. import plotting
 
+    if model_name == "SPM_3D":
+        raise ValueError(
+            "Tab-driven resistive-heating analysis requires a 2+1D model "
+            "(SPM, SPMe or DFN); SPM_3D is a genuine-3D FEM thermal model "
+            "with no in-plane current-collector map. Use analysis='discharge' "
+            "with SPM_3D, or pick a 2+1D model for the tab analysis."
+        )
+
     cls = cls or PouchCellSimulation
     sim = cls(
         spec=spec,

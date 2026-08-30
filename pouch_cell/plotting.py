@@ -140,11 +140,21 @@ def plot_current_and_potentials(sol: pybamm.Solution):
 # --------------------------------------------------------------------------- #
 # 2D in-plane maps (2+1D models)
 # --------------------------------------------------------------------------- #
-def _yz_extents(sol: pybamm.Solution) -> tuple[float, float, float, float]:
-    """Return (y_min, y_max, z_min, z_max) in metres for the current collector."""
-    y = np.asarray(sol["y [m]"].entries)
-    z = np.asarray(sol["z [m]"].entries)
-    return float(y.min()), float(y.max()), float(z.min()), float(z.max())
+def _yz_extents(sol: pybamm.Solution, spec=None) -> tuple[float, float, float, float]:
+    """Return (y_min, y_max, z_min, z_max) in metres for the current collector.
+
+    Falls back to the ``spec`` footprint (0..width, 0..height) when the
+    ``y [m]`` / ``z [m]`` coordinate variables are not in the solution (e.g.
+    a non-2D model), so plotting never crashes on the coordinate lookup.
+    """
+    try:
+        y = np.asarray(sol["y [m]"].entries)
+        z = np.asarray(sol["z [m]"].entries)
+        return float(y.min()), float(y.max()), float(z.min()), float(z.max())
+    except KeyError:
+        if spec is None:
+            raise
+        return 0.0, spec.width, 0.0, spec.height
 
 
 def _mark_tabs(ax, spec, z_hi_cm):
@@ -302,7 +312,7 @@ def plot_tab_heating(
 
     Returns the matplotlib ``Figure``.
     """
-    y_lo, y_hi, z_lo, z_hi = _yz_extents(sol)
+    y_lo, y_hi, z_lo, z_hi = _yz_extents(sol, spec)
     times = np.asarray(sol["Time [s]"].entries)
     tidx = entries_last_index(sol, t)
 

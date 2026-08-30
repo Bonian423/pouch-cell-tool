@@ -17,9 +17,24 @@ cfg = st.session_state.config
 # ---------------------------------------------------------------- analysis
 st.markdown("#### Analysis")
 ana_opts = registry.options("analysis")
-idx = ana_opts.index(cfg.analysis) if cfg.analysis in ana_opts else 0
-cfg.analysis = st.radio("Type", ana_opts, index=idx, horizontal=True,
-                        help="discharge = plain CC discharge · tab = tab heating")
+# Tab analysis only makes sense for the 2+1D models -- SPM_3D has no in-plane
+# current-collector map.  Read the *intended* selection from the widget key and
+# force 'discharge' for SPM_3D *before* the radio is instantiated (writing a
+# widget key after it is instantiated is forbidden by Streamlit).
+intended = st.session_state.get("r_analysis", cfg.analysis)
+if cfg.model_name == "SPM_3D" and intended == "tab":
+    st.session_state["r_analysis"] = "discharge"
+    cfg.analysis = "discharge"
+    st.warning(
+        "Tab analysis requires a 2+1D model (SPM / SPMe / DFN); switched the "
+        "analysis to 'discharge'. Choose SPM for long tab runs."
+    )
+cfg.analysis = st.radio(
+    "Type", ana_opts,
+    index=ana_opts.index(cfg.analysis) if cfg.analysis in ana_opts else 0,
+    key="r_analysis", horizontal=True,
+    help="discharge = plain CC discharge · tab = tab heating",
+)
 if cfg.analysis == "tab":
     st.info(
         "Tab analysis uses a 2+1D `x-lumped` model. DFN/SPMe are DAE-limited to "
