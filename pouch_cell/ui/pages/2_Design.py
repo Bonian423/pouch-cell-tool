@@ -1,4 +1,4 @@
-"""Design page -- cell geometry + auto-sizing.
+"""Design page -- cell geometry + auto-sizing + electrochemistry parameter overrides.
 
 Auto-sizing runs at the TOP of the script, before any widget is instantiated,
 so the sized thicknesses can be written back into the widget keys (``d_L_n``,
@@ -7,18 +7,29 @@ so the sized thicknesses can be written back into the widget keys (``d_L_n``,
 so the intended geometry is *read* from session state (reading is always safe)
 and the sized values are *written* before the widgets exist.  The manual
 "Re-size to capacity" button uses an ``on_click`` callback for the same reason.
+
+The electrochemistry overrides (microstructure / electrolyte / active material)
+live in ``config.extra_overrides`` and are written straight into the PyBaMM
+``ParameterValues`` used by the solve.
 """
 import copy
 
 import streamlit as st
 
 from pouch_cell.ui import common
+from pouch_cell.ui.params import (
+    CURATED_PARAMS,
+    CURATED_THERMAL_PARAMS,
+    render_curated_editors,
+    render_param_table,
+)
 
 common.init_state()
 common.render_sidebar()
 
-st.title("Design — cell geometry")
+st.title("Design — cell geometry & chemistry")
 spec = st.session_state.spec
+cfg = st.session_state.config
 
 # ------------------------------------------------------------------ manual
 manual = st.checkbox(
@@ -52,7 +63,7 @@ if (not manual) and (sizing_key != tuple(st.session_state.sizing_key)):
     except RuntimeError as err:
         # don't retry on every rerun -- the user must change a knob to retry
         st.session_state.sizing_key = tuple(sizing_key)
-        st.error(f"⚠️ Auto-sizing couldn't reach the target: {err}")
+        st.error(f"Auto-sizing couldn't reach the target: {err}")
     else:
         st.session_state.spec = sized
         # safe: these widgets are not instantiated yet on this run
@@ -148,14 +159,14 @@ def _force_resize() -> None:
 
 
 if "sizing_error" in st.session_state:
-    st.error(f"⚠️ Re-sizing failed: {st.session_state['sizing_error']}")
+    st.error(f"Re-sizing failed: {st.session_state['sizing_error']}")
 
 c1, c2 = st.columns([1, 3])
 c1.button(
-    "🔄 Re-size to capacity",
+    "Re-size to capacity",
     on_click=_force_resize,
     disabled=manual,
-    use_container_width=True,
+    width="stretch",
 )
 c2.caption(
     f"Current thicknesses: L_n = {spec.L_n * 1e6:.1f} µm, "
@@ -164,3 +175,34 @@ c2.caption(
 
 st.divider()
 st.code(spec.report())
+
+# ------------------------------------------------------------------ chemistry
+st.markdown("## Electrochemistry parameter overrides")
+st.caption(
+    f"Overrides apply on top of the `{cfg.parameter_set}` parameter set and are "
+    "written into the solve's `ParameterValues`. Values not touched here keep "
+    "the set's defaults."
+)
+ov = cfg.extra_overrides
+_curated_names = {p[1] for p in CURATED_PARAMS} | {p[1] for p in CURATED_THERMAL_PARAMS}
+_active_curated = len([k for k in ov if k in _curated_names])
+with st.expander(
+    f"Curated knobs — microstructure, electrolyte, active material "
+    f"({_active_curated} active)",
+    expanded=True,
+):
+    render_curated_editors(cfg.parameter_set, ov, section_title="Microstructure & electrolyte")
+    c1, c2 = st.columns([1, 3])
+    if c1.button("Reset curated overrides"):
+        for k in list(ov):
+            if k in _curated_names:
+                ov.pop(k, None)
+        st.rerun()
+    c2.caption("These map to physically-measurable quantities (porosity, particle "
+               "radius, Bruggeman, conductivity, ...).")
+
+with st.expander("Searchable full parameter table (advanced)", expanded=False):
+    render_param_table(cfg.parameter_set, ov)
+    if st.button("Reset ALL parameter overrides"):
+        ov.clear()
+        st.rerun()

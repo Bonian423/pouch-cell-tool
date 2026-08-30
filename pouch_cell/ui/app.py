@@ -9,10 +9,10 @@ from pouch_cell.ui import common
 common.init_state()
 common.render_sidebar()
 
-st.title("⚡ Pouch Cell Modelling Tool")
+st.title("Pouch Cell Modelling Tool")
 st.caption(
-    "Tweak the design and run conditions, press **Run**, and compare results — "
-    "fast iteration on a PyBaMM 3D pouch-cell model."
+    "Tweak the design, model and run conditions, press **Run**, and compare "
+    "results — fast iteration on a PyBaMM 3D pouch-cell model."
 )
 
 with st.container():
@@ -22,8 +22,9 @@ with st.container():
 st.divider()
 st.markdown(
     """
-**Pages** (sidebar): **Design** (geometry + auto-sizing) · **Model & Run** ·
-**Thermal** (cooling / heat pipe) · **Results** · **History**.
+**Pages** (sidebar): **Model & Run** · **Design** (geometry + chemistry) ·
+**Thermal** (cooling / heat pipe / maps) · **Protocols** (discharge / charge /
+multi-step) · **Results** · **History** · **Help**.
 
 Solves run in a background process, so you can keep tweaking while a long 2+1D
 or 3D run is in flight, and cancel it at any time.

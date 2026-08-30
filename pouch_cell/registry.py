@@ -13,7 +13,56 @@ from __future__ import annotations
 # --- models -----------------------------------------------------------------
 MODEL_NAMES: tuple[str, ...] = ("SPM", "SPMe", "DFN", "SPM_3D")
 THERMAL_OPTIONS: tuple[str, ...] = ("isothermal", "lumped", "x-lumped", "x-full")
-PARAMETER_SETS: tuple[str, ...] = ("Chen2020", "OKane2022")
+
+# Full list of parameter sets shipped with PyBaMM 26.8 (in display order).
+# Chemistries tagged here drive the UI descriptions on the Model page.
+PARAMETER_SETS: tuple[str, ...] = (
+    "Chen2020", "Marquis2019", "Ecker2015", "Mohtat2020", "OKane2022",
+    "ORegan2022", "NCA_Kim2011", "Ai2020", "Prada2013", "Ramadass2004",
+    "Xu2019", "Sulzer2019",
+    # advanced / specialised (half-cells, composite, MSMR, ECM, Na-ion)
+    "Chen2020_composite", "Ecker2015_graphite_halfcell",
+    "OKane2022_graphite_SiOx_halfcell", "MSMR_Example", "ECM_Example",
+    "Chayambuka2022",
+)
+
+# Short per-set descriptions / chemistry tags for the Model page.
+PARAMETER_SET_INFO: dict[str, str] = {
+    "Chen2020": "NMC111/graphite — the PyBaMM default; clean, well-tuned full-cell "
+                "dataset used across the docs and most tutorials.",
+    "Marquis2019": "NMC/graphite — a reduced-parameter SPM-targeted set (from the "
+                   "SEI / degradation review paper). Good when you only need SPM.",
+    "Ecker2015": "NMC/graphite Kokam pouch cell — very detailed experimental "
+                 "fit (impedance-derived); a popular alternative to Chen2020.",
+    "Mohtat2020": "NMC/graphite — targeted at cell-level energy/power and "
+                  "lifetime studies with a fast-solving SPM formulation.",
+    "OKane2022": "NMC811/graphite — includes SEI growth + lithium-plating "
+                 "side reactions; ideal for aging-focused runs.",
+    "ORegan2022": "NMC811 + graphite/silicon — closest chemistry match to your "
+                  "NCM 811 design (high-Ni cathode).",
+    "NCA_Kim2011": "NCA/graphite — the classic automotive high-energy dataset.",
+    "Ai2020": "LFP/graphite — lithium iron phosphate; flat voltage plateau, "
+              "fast-charge & thermal studies.",
+    "Prada2013": "LCO/LTO — a commercial 16 Ah cell; good for low-ESR / "
+                 "high-power comparisons.",
+    "Ramadass2004": "LCO/LiC6 (graphite) — a widely-cited early DFN dataset.",
+    "Xu2019": "NMC/Li half-cell inspired full-cell dataset with low-temperature "
+              "extrapolation; good for cold-soak studies.",
+    "Sulzer2019": "NMC/graphite with a focus on energy + degradation balance "
+                  "(used with the degradation models).",
+    "Chen2020_composite": "Composite NMC + graphite electrode (requires the "
+                          "composite model; advanced).",
+    "Ecker2015_graphite_halfcell": "Graphite half-cell from the Ecker dataset "
+                                   "(anode-only; advanced).",
+    "OKane2022_graphite_SiOx_halfcell": "Graphite/SiOx half-cell for SEI & "
+                                        "plating studies (advanced).",
+    "MSMR_Example": "Multi-Species Multi-Reaction example set (requires MSMR "
+                    "model; advanced).",
+    "ECM_Example": "Equivalent-Circuit-Model parameter set (not a physics "
+                   "DFN dataset; for ECM models).",
+    "Chayambuka2022": "Sodium-ion cell parameter set (Na chemistry; not "
+                      "lithium — for comparison runs).",
+}
 ANALYSES: tuple[str, ...] = ("discharge", "tab")
 SOLVERS: tuple[str, ...] = ("default", "idaklu", "casadi-fast", "casadi-safe")
 

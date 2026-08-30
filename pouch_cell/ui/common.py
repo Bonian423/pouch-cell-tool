@@ -12,10 +12,20 @@ import streamlit as st
 from .. import registry
 from ..config import io as preset_io
 from ..config.design import PouchCellSpec
+from ..config.protocol import Protocol
 from ..config.run import RunConfig
 from ..config.thermal import ThermalConfig
 
 _WORKER_MODULE = "pouch_cell.ui.worker"
+HISTORY_FILE = preset_io.PROJECT_ROOT / "pouch_output" / "history.jsonl"
+
+# Drop the Design-page widget keys when loading a spec so they re-seed from it
+# (otherwise stale widget values trigger a spurious auto-size).
+_DESIGN_KEYS = (
+    "d_height", "d_width", "d_thickness", "d_nstacks", "d_capacity",
+    "d_L_n", "d_L_p", "d_L_s", "d_L_cn", "d_L_cp",
+    "d_tab_w", "d_tab_neg", "d_tab_pos", "d_manual",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -39,8 +49,12 @@ def init_state() -> None:
         )
     if "thermal" not in st.session_state:
         st.session_state.thermal = ThermalConfig()
+    if "protocol" not in st.session_state:
+        st.session_state.protocol = Protocol.discharge_protocol()
     if "history" not in st.session_state:
         st.session_state.history = []
+    if "saved_count" not in st.session_state:
+        st.session_state.saved_count = 0
     if "last_result" not in st.session_state:
         st.session_state.last_result = None
     if "run_dir" not in st.session_state:
@@ -59,15 +73,13 @@ def apply_config(cfg: RunConfig) -> None:
     st.session_state.config = cfg
     st.session_state.spec = cfg.spec()
     st.session_state.thermal = ThermalConfig(cooling=cfg.cooling)
+    if cfg.protocol:
+        st.session_state.protocol = Protocol.from_dict(cfg.protocol)
     s = st.session_state.spec
     st.session_state.sizing_key = (s.capacity_Ah, s.height, s.width, s.n_stacks)
     # Drop the Design-page widget keys so they re-seed from the loaded spec
     # (otherwise stale values would trigger a spurious auto-size).
-    for _k in (
-        "d_height", "d_width", "d_thickness", "d_nstacks", "d_capacity",
-        "d_L_n", "d_L_p", "d_L_s", "d_L_cn", "d_L_cp",
-        "d_tab_w", "d_tab_neg", "d_tab_pos", "d_manual",
-    ):
+    for _k in _DESIGN_KEYS:
         st.session_state.pop(_k, None)
 
 
@@ -79,8 +91,10 @@ def launch_run() -> None:
     spec = st.session_state.spec
     cfg = st.session_state.config
     thermal = st.session_state.thermal
+    proto = st.session_state.protocol
     cfg.design = spec.as_dict()          # keep presets in sync
     cfg.cooling = thermal.to_cooling()   # fold the thermal page into cooling=
+    cfg.protocol = proto.as_dict()       # the run type lives on the protocol
 
     runs_root = preset_io.PROJECT_ROOT / "pouch_output" / "runs"
     run_dir = runs_root / f"run_{int(time.time())}"
@@ -120,15 +134,7 @@ def poll_run() -> dict:
     else:
         data = {"status": "starting"}
 
-    if data.get("status") == "done":
-        res = Path(st.session_state.run_dir) / "result.json"
-        result = json.loads(res.read_text(encoding="utf-8")) if res.is_file() else {}
-        result["run_dir"] = st.session_state.run_dir
-        st.session_state.last_result = result
-        st.session_state.history.append(result)
-        st.session_state.run_state = "idle"
-        st.session_state.proc = None
-    elif data.get("status") == "error":
+    if data.get("status") in ("done", "error"):
         res = Path(st.session_state.run_dir) / "result.json"
         result = json.loads(res.read_text(encoding="utf-8")) if res.is_file() else {}
         result["run_dir"] = st.session_state.run_dir
@@ -152,36 +158,94 @@ def cancel_run() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# History persistence (pouch_output/history.jsonl)
+# --------------------------------------------------------------------------- #
+def save_run(result: dict) -> Path:
+    """Append one completed run to the JSONL history file (returns its path)."""
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"saved_at": time.strftime("%Y-%m-%d %H:%M:%S"), "result": result}
+    with open(HISTORY_FILE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, default=str) + "\n")
+    return HISTORY_FILE
+
+
+def save_session() -> int:
+    """Persist any not-yet-saved in-session runs to JSONL. Returns rows saved."""
+    history = st.session_state.history
+    n = 0
+    for result in history[st.session_state.saved_count:]:
+        save_run(result)
+        n += 1
+    st.session_state.saved_count = len(history)
+    return n
+
+
+def load_saved_runs() -> list[dict]:
+    """Read all previously saved runs from JSONL (newest last)."""
+    if not HISTORY_FILE.is_file():
+        return []
+    out: list[dict] = []
+    with open(HISTORY_FILE, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def delete_saved_run(idx: int) -> None:
+    """Remove the ``idx``-th saved entry (0-based, ``load_saved_runs`` order)."""
+    entries = load_saved_runs()
+    if idx < 0 or idx >= len(entries):
+        return
+    del entries[idx]
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
+        for e in entries:
+            fh.write(json.dumps(e, default=str) + "\n")
+
+
+def load_result_into_session(entry: dict) -> None:
+    """Make a saved run the 'current' result so Results can review it."""
+    result = entry.get("result", entry)
+    st.session_state.last_result = result
+    st.session_state.run_dir = result.get("run_dir")
+
+
+# --------------------------------------------------------------------------- #
 # Sidebar
 # --------------------------------------------------------------------------- #
 def _quick_knobs() -> None:
     cfg = st.session_state.config
     models = registry.options("model")
     idx = models.index(cfg.model_name) if cfg.model_name in models else 0
-    cfg.model_name = st.selectbox("Model", models, index=idx)
+    cfg.model_name = st.selectbox("Model", models, index=idx, key="sb_model")
 
     mesh_opts = registry.options("mesh_3d" if cfg.model_name == "SPM_3D" else "mesh_21d")
     midx = mesh_opts.index(cfg.mesh) if cfg.mesh in mesh_opts else 0
-    cfg.mesh = st.selectbox("Mesh", mesh_opts, index=midx)
+    cfg.mesh = st.selectbox("Mesh", mesh_opts, index=midx, key="sb_mesh")
 
-    cfg.C_rate = st.number_input("C-rate", 0.05, 10.0, float(cfg.C_rate), 0.05)
-    cfg.duration_s = st.number_input(
-        "Duration (s)", 1.0, 86400.0, float(cfg.duration_s), 10.0
+    cfg.initial_soc = st.slider(
+        "Initial SOC", 0.0, 1.0, float(cfg.initial_soc), 0.05, key="sb_soc"
     )
-    cfg.initial_soc = st.slider("Initial SOC", 0.0, 1.0, float(cfg.initial_soc), 0.05)
 
 
 def _presets() -> None:
-    with st.sidebar.expander("💾 Presets", expanded=False):
+    with st.sidebar.expander("Presets", expanded=False):
         names = preset_io.list_presets()
-        sel = st.selectbox("Load preset", ["— none —"] + names)
-        if st.button("Load", use_container_width=True) and sel != "— none —":
+        sel = st.selectbox("Load preset", ["— none —"] + names, key="sb_preset_sel")
+        if st.button("Load", width="stretch") and sel != "— none —":
             apply_config(preset_io.load_preset(sel))
             st.rerun()
-        save_name = st.text_input("Save current as", key="save_preset_name")
-        if st.button("Save", use_container_width=True) and save_name:
+        save_name = st.text_input("Save current as", key="sb_save_preset_name")
+        if st.button("Save", width="stretch") and save_name:
             cfg = st.session_state.config
             cfg.design = st.session_state.spec.as_dict()
+            cfg.protocol = st.session_state.protocol.as_dict()
             path = preset_io.save_preset(save_name, cfg)
             st.sidebar.success(f"Saved {path.name}")
 
@@ -193,7 +257,7 @@ def render_sidebar() -> None:
     and re-runs the page so the progress updates live.
     """
     init_state()
-    st.sidebar.title("⚡ Pouch cell")
+    st.sidebar.title("Pouch cell")
 
     with st.sidebar.expander("Quick run", expanded=True):
         _quick_knobs()
@@ -201,12 +265,12 @@ def render_sidebar() -> None:
 
     st.sidebar.divider()
     if st.session_state.run_state == "running":
-        st.sidebar.warning("⏳ Solving…")
-        if st.sidebar.button("✖ Cancel", use_container_width=True):
+        st.sidebar.warning("Solving…")
+        if st.sidebar.button("Cancel", width="stretch"):
             cancel_run()
             st.rerun()
     else:
-        if st.sidebar.button("▶ Run", type="primary", use_container_width=True):
+        if st.sidebar.button("Run", type="primary", width="stretch"):
             launch_run()
             st.rerun()
 

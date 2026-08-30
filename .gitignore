@@ -22,6 +22,9 @@ _diag_*.txt
 *_check.txt
 *_test_*.json
 validate_out.txt
+_tproto*
+_param_sets*
+param_sets*.txt
 
 # OS / editor
 .DS_Store

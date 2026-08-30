@@ -17,6 +17,7 @@ The UI polls ``progress.json`` and can terminate this process to cancel.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -45,8 +46,42 @@ def _watcher(outdir: Path, stop: threading.Event) -> None:
         time.sleep(1.0)
 
 
-def _save_figures(outdir: Path, sim, sol, config, spec) -> list[str]:
-    """Save the result figures and return their filenames."""
+def _to_timeseries(arr) -> np.ndarray:
+    """Flatten a solution-variable array to a 1D time series (spatial mean)."""
+    import numpy as np
+
+    a = np.asarray(arr, dtype=float)
+    while a.ndim > 1:
+        a = a.mean(axis=0)
+    return a
+
+
+def _save_vt_csv(outdir: Path, sol) -> None:
+    """Save Voltage(t) / Temperature(t) as a small CSV for later re-plotting."""
+    import numpy as np
+
+    t = _to_timeseries(sol["Time [s]"].entries)
+    V = _to_timeseries(sol["Voltage [V]"].entries)
+    T = None
+    for name in (
+        "Volume-averaged cell temperature [K]",
+        "X-averaged cell temperature [K]",
+        "Cell temperature [K]",
+    ):
+        try:
+            T = _to_timeseries(sol[name].entries)
+        except KeyError:
+            continue
+        break
+    with open(outdir / "vt.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["time_s", "voltage_V", "temperature_K"])
+        for i in range(len(t)):
+            w.writerow([t[i], V[i], float(T[i]) if T is not None else ""])
+
+
+def _save_figures(outdir: Path, sim, sol, config, spec, metrics) -> list[str]:
+    """Save the result figures (per-model maps, per-step maps) + V/T CSV."""
     import matplotlib.pyplot as plt
     from .. import plotting
 
@@ -58,15 +93,57 @@ def _save_figures(outdir: Path, sim, sol, config, spec) -> list[str]:
         names.append("tab_heating.png")
         return names
 
+    # V/T time series + CSV (always)
     fig = plotting.plot_discharge(sol, spec)
     fig.savefig(outdir / "discharge.png", dpi=110, bbox_inches="tight")
     plt.close(fig)
     names.append("discharge.png")
-    if config.dimensionality == 2:
-        plotting.plot_temperature_map(sol)
-        plt.savefig(outdir / "temperature.png", dpi=110, bbox_inches="tight")
-        plt.close()
-        names.append("temperature.png")
+    try:
+        _save_vt_csv(outdir, sol)
+    except Exception:  # noqa: BLE001 - CSV is best-effort
+        pass
+
+    dim = int(getattr(sim, "dimensionality", 0))
+    if dim == 2:
+        # temperature + current-density + Ohmic-heating maps in one figure
+        fig = plotting.plot_tab_heating(sol, spec, param=sim.param)
+        fig.savefig(outdir / "thermal_maps.png", dpi=110, bbox_inches="tight")
+        plt.close(fig)
+        names.append("thermal_maps.png")
+    elif config.model_name == "SPM_3D":
+        try:
+            fig = plotting.plot_3d_cross_section(
+                sol, variable="Cell temperature [K]", plane="yz", position=0.5
+            )
+            fig.savefig(outdir / "temperature_3d.png", dpi=110, bbox_inches="tight")
+            plt.close(fig)
+            names.append("temperature_3d.png")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # per-step thermal maps (multi-step protocol on a 2+1D model)
+    steps = metrics.get("steps") or []
+    if steps and dim == 2:
+        from ..config.protocol import Protocol
+
+        proto = Protocol.from_dict(config.protocol) if config.protocol else None
+        mode = (proto.step_map_mode if proto else "every")
+        if mode == "cycle_last":
+            last_by_cycle: dict = {}
+            for row in steps:
+                last_by_cycle[row["cycle"]] = row
+            steps = list(last_by_cycle.values())
+        for row in steps:
+            try:
+                fig = plotting.plot_tab_heating(
+                    sol, spec, param=sim.param, t=float(row["t_end_s"])
+                )
+                name = f"step_{int(row['cycle']):02d}_{int(row['step']):02d}.png"
+                fig.savefig(outdir / name, dpi=110, bbox_inches="tight")
+                plt.close(fig)
+                names.append(name)
+            except Exception:  # noqa: BLE001 - per-step maps are best-effort
+                continue
     return names
 
 
@@ -120,7 +197,7 @@ def main(argv=None) -> int:
             sim, sol, metrics = run(config, spec=spec, verbose=False)
 
         _write_progress(outdir, status="running", stage="post-processing")
-        metrics["figures"] = _save_figures(outdir, sim, sol, config, spec)
+        metrics["figures"] = _save_figures(outdir, sim, sol, config, spec, metrics)
         metrics["wall_s"] = round(time.time() - t0, 2)
         metrics["sizing_history"] = getattr(sim, "sizing_history", [])
 

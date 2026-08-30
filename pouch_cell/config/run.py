@@ -33,7 +33,8 @@ class RunConfig:
     full_stack_3d: bool = False
 
     # --- run ---------------------------------------------------------------
-    analysis: str = "discharge"    # registry: discharge | tab
+    analysis: str = "discharge"    # registry: discharge | tab (legacy single-run)
+    protocol: dict | None = None   # serialized Protocol (takes precedence)
     initial_soc: float = 1.0
     C_rate: float = 1.0
     duration_s: float = 120.0

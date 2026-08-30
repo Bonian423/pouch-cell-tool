@@ -12,8 +12,9 @@ The UI, the CLI and the notebook all read and write these same objects, so a
 new knob is added in exactly one place.
 """
 from .design import PouchCellSpec
+from .protocol import Protocol, Step
 from .run import RunConfig
 from .thermal import ThermalConfig
 from . import io
 
-__all__ = ["PouchCellSpec", "RunConfig", "ThermalConfig", "io"]
+__all__ = ["PouchCellSpec", "RunConfig", "ThermalConfig", "Protocol", "Step", "io"]

@@ -251,6 +251,21 @@ class PouchCellSimulation:
         self.solution = self.sim.solve(**sim_kwargs)
         return self.solution
 
+    def run_experiment_obj(
+        self,
+        experiment: pybamm.Experiment,
+        **sim_kwargs,
+    ) -> pybamm.Solution:
+        """Run a pre-built :class:`pybamm.Experiment`.
+
+        Supports everything ``Experiment`` accepts that ``run_experiment``
+        doesn't expose directly: cycles, ``temperature`` and overall
+        ``termination`` conditions (used by multi-step protocols).
+        """
+        self.sim = pybamm.Simulation(**self._sim_kwargs, experiment=experiment)
+        self.solution = self.sim.solve(**sim_kwargs)
+        return self.solution
+
     def discharge(
         self,
         C_rate: float = 1.0,
