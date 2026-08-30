@@ -1,0 +1,10 @@
+# Core modelling
+pybamm>=25.0
+scikit-fem>=9.0      # 2D/3D finite-element meshes for the current collector & cell
+matplotlib>=3.8      # plotting
+numpy>=1.24
+scipy>=1.10
+
+# Notebook
+ipykernel>=6.25
+ipywidgets>=8.0

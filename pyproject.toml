@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pouch-cell-tool"
+version = "0.2.0"
+description = "3D PyBaMM pouch-cell modelling tool (NCM811/graphite, multi-stack) with a Streamlit UI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pybamm>=25.0",
+    "scikit-fem>=9.0",     # 2D/3D finite-element meshes for the current collector & cell
+    "matplotlib>=3.8",     # plotting
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "streamlit>=1.30",     # UI for fast design iteration
+]
+
+[project.optional-dependencies]
+notebook = ["ipykernel>=6.25", "ipywidgets>=8.0"]
+
+[project.scripts]
+pouch-cell = "pouch_cell.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pouch_cell*"]
+
+[tool.setuptools.package-data]
+pouch_cell = ["py.typed"]

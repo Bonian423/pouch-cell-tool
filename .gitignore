@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+.venv-1/
+venv/
+
+# Simulation / run outputs
+pouch_output/
+
+# Streamlit
+.streamlit/
+
+# Temp / diagnostic files
+_diag_*.py
+_diag_*.txt
+*_check.txt
+*_test_*.json
+validate_out.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
