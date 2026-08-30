@@ -203,14 +203,48 @@ EXAMPLE_OVERRIDES: list[tuple[str, dict]] = [
 QUICK_MAP_DIR = Path(__file__).resolve().parents[2] / "pouch_output" / "quick_maps"
 
 
+def _friendly_preview_error(err) -> str:
+    """Turn a raw PyBaMM exception into an actionable one-liner."""
+    msg = repr(err)
+    if "Parameter" in msg and "not found" in msg:
+        return (
+            "This parameter set isn't a full lithium-ion cell set "
+            "(half-cell / composite / MSMR / ECM / Na-ion), so it can't build a "
+            "2+1D SPM thermal map. Pick a full-cell set on the Model & Run page "
+            "(e.g. Chen2020, OKane2022, ORegan2022)."
+        )
+    if "initial condition is outside of variable bounds" in msg:
+        return (
+            "The initial cell state is outside physical bounds — check Initial "
+            "SOC and any parameter overrides (porosity, concentrations, radii)."
+        )
+    if ("non-positive at initial conditions" in msg
+            or "Minimum voltage" in msg
+            or "IDA_CONV_FAIL" in msg
+            or "CONV_FAIL" in msg):
+        return (
+            "The cell's initial state is degenerate: the initial voltage is at "
+            "or far below the discharge cut-off (2.5 V), so the solver can't "
+            "start. This usually means a parameter override set an electrode "
+            "concentration / OCP out of range, or the Initial SOC is too low. "
+            "Reset the overrides (Design → parameter table, or Thermal → raw "
+            "overrides) and set Initial SOC back up, then retry."
+        )
+    return msg
+
+
 def quick_thermal_preview(spec, config, thermal) -> dict:
     """Run a fast SPM 2+1D micro_21d solve and save thermal maps.
 
     Returns a dict ``{"ok": bool, "figure": str|None, "error": str|None,
     "metrics": dict}``.  The figure path is a PNG the page can ``st.image``.
+
+    Degenerate initial states (initial voltage at/below the discharge cut-off,
+    usually from a bad parameter override or a low Initial SOC) and
+    non-full-cell parameter sets return a human-readable ``error`` instead of
+    a raw PyBaMM traceback.
     """
     import matplotlib.pyplot as plt
-    import pybamm
 
     from .. import plotting
     from ..core.experiment import collect_metrics
@@ -242,7 +276,8 @@ def quick_thermal_preview(spec, config, thermal) -> dict:
         plt.close(fig)
         return {"ok": True, "figure": str(path), "error": None, "metrics": metrics}
     except Exception as err:  # noqa: BLE001
-        return {"ok": False, "figure": None, "error": repr(err), "metrics": {}}
+        return {"ok": False, "figure": None,
+                "error": _friendly_preview_error(err), "metrics": {}}
 
 
 def example_json(name: str) -> str:

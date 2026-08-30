@@ -106,6 +106,8 @@ qm = st.session_state.get("quick_map")
 if qm:
     if qm.get("ok"):
         st.image(qm["figure"], caption="Thermal preview (SPM 2+1D, 5 s)", width="stretch")
+        if qm.get("warning"):
+            st.warning(qm["warning"])
         m = qm.get("metrics", {})
         st.caption(
             f"final V = {m.get('final_V', float('nan')):.3f} V · "

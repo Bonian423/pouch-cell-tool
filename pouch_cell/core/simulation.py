@@ -154,8 +154,6 @@ class PouchCellSimulation:
             heat_transfer_coefficient_W_m2K=heat_transfer_coefficient,
             ambient_temperature_K=t_amb_cool,
         )
-        if extra_cool:
-            self.param.update(extra_cool)
         self.cooling = cooling
 
         # --- optional localized heat-pipe cooling (2+1D x-lumped only) -----
@@ -176,6 +174,11 @@ class PouchCellSimulation:
             if not 0.0 <= initial_soc <= 1.0:
                 raise ValueError("initial_soc must be between 0 and 1.")
             self.param.set_initial_state(initial_soc)
+        # cooling / raw overrides are applied *after* the initial state so
+        # they win over set_initial_state (which would otherwise reset any
+        # concentration-type override back to the SOC-1.0 values)
+        if extra_cool:
+            self.param.update(extra_cool)
 
         # --- model -----------------------------------------------------------
         self.model = build_model(
