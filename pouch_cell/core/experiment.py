@@ -124,7 +124,8 @@ def _build_simulation(spec, config, model_name, dimensionality, thermal, mesh):
         particle=config.particle,   # "uniform profile" works with r_n=r_p=1 meshes
     )
     if config.extra_overrides:
-        sim.param.update(config.extra_overrides)
+        from .parameters import apply_parameter_overrides
+        apply_parameter_overrides(sim.param, config.extra_overrides)
     return sim
 
 

@@ -51,7 +51,7 @@ def build_parameter_values(
         # a custom set's saved electrochemistry overrides win over the base
         # set defaults (geometry/thermal applied below still take precedence)
         if set_overrides:
-            param.update(set_overrides)
+            apply_parameter_overrides(param, set_overrides)
     else:
         param = pybamm.ParameterValues(parameter_set)
 
@@ -97,4 +97,28 @@ def build_parameter_values(
         }
     )
 
+    return param
+
+
+def apply_parameter_overrides(param: pybamm.ParameterValues, overrides: dict | None) -> pybamm.ParameterValues:
+    """Apply an ``overrides`` dict to ``param``, converting serialized tables.
+
+    A value ``{"__function_table__": {"x": [...], "y": [...]}}`` is converted
+    into PyBaMM's ``(func_name, data)`` interpolated-table form so a function
+    parameter (OCP vs stoichiometry, diffusivity vs concentration, ...) can be
+    overridden by an edited data table.  Everything else is passed straight to
+    ``param.update``.
+    """
+    import numpy as np
+
+    for key, value in (overrides or {}).items():
+        if isinstance(value, dict) and "__function_table__" in value:
+            d = value["__function_table__"]
+            x = np.asarray(d.get("x", []), dtype=float)
+            y = np.asarray(d.get("y", []), dtype=float)
+            order = np.argsort(x)
+            safe = f"table_{key}".replace(" ", "_")
+            param.update({key: (safe, np.column_stack([x[order], y[order]]))})
+        else:
+            param.update({key: value})
     return param

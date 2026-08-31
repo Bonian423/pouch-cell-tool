@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import streamlit as st  # noqa: E402  (module-level: used by @st.dialog etc.)
+
 # --------------------------------------------------------------------------- #
 # Parameter introspection
 # --------------------------------------------------------------------------- #
@@ -30,11 +32,12 @@ def load_pv(set_name: str):
     import pybamm
 
     from ..config.io import resolve_parameter_set
+    from ..core.parameters import apply_parameter_overrides
 
     base, overrides = resolve_parameter_set(set_name)
     pv = pybamm.ParameterValues(base)
     if overrides:
-        pv.update(overrides)
+        apply_parameter_overrides(pv, overrides)
     return pv
 
 
@@ -342,7 +345,8 @@ def quick_thermal_preview(
         overrides = dict(config.extra_overrides or {})
         overrides.update(thermal.extra_overrides or {})
         if overrides:
-            sim.param.update(overrides)
+            from ..core.parameters import apply_parameter_overrides
+            apply_parameter_overrides(sim.param, overrides)
         if steps and step_idx is not None:
             proto = Protocol(type="custom", steps=list(steps[: step_idx + 1]),
                              thermal_maps=False)
@@ -421,6 +425,114 @@ def render_curated_editors(
         st.caption("No curated parameters found for this parameter set.")
 
 
+def _sample_function_table(
+    set_name: str, param_name: str, x0: float, x1: float, n: int
+):
+    """Sample a function-valued parameter into an ``(x, y)`` DataFrame.
+
+    Used to pre-fill the function-table editor: the current (base-set) function
+    is evaluated at ``n`` evenly spaced points over ``[x0, x1]`` so the user can
+    tweak the values (or the domain and re-sample).
+    """
+    import numpy as np
+    import pandas as pd
+    import pybamm
+
+    from ..config.io import resolve_parameter_set
+
+    base_name, _ = resolve_parameter_set(set_name)
+    pv = pybamm.ParameterValues(base_name)
+    xs = np.linspace(float(x0), float(x1), max(3, int(n)))
+    try:
+        fn = pv[param_name]
+        ys = [float(fn(x)) for x in xs]
+    except Exception:  # noqa: BLE001 - fall back to a flat default table
+        ys = [1.0] * len(xs)
+    return pd.DataFrame({"x": xs, "y": ys})
+
+
+@st.dialog("Edit function as a data table")
+def _edit_function_table(param_name: str, overrides: dict, set_name: str) -> None:
+    """Popup to edit a function-valued parameter as an (x, y) data table.
+
+    The current function is sampled into the table; the user edits / adds rows
+    and PyBaMM interpolates the result for the whole run.  The override is
+    stored JSON-serialisably as ``{"__function_table__": {"x": [...], "y": [...]}}``
+    and converted to a PyBaMM table parameter by
+    :func:`pouch_cell.core.parameters.apply_parameter_overrides`.
+    """
+    import pandas as pd
+
+    st.caption(
+        f"PyBaMM interpolates these **(x, y)** points for `{param_name}`. "
+        "Pick a domain and re-sample from the current function, then edit / add "
+        "rows by hand."
+    )
+    c1, c2, c3 = st.columns(3)
+    x0 = c1.number_input("x min", value=0.0, key=f"ft_x0_{param_name}")
+    x1 = c2.number_input("x max", value=1.0, key=f"ft_x1_{param_name}")
+    n = int(c3.number_input("Points", 3, 300, 21, key=f"ft_n_{param_name}"))
+    if st.button("Re-sample from current function", key=f"ft_build_{param_name}"):
+        st.session_state[f"ft_tbl_{param_name}"] = _sample_function_table(
+            set_name, param_name, x0, x1, n
+        )
+        st.rerun()
+
+    key = f"ft_tbl_{param_name}"
+    if key not in st.session_state:
+        existing = overrides.get(param_name)
+        if isinstance(existing, dict) and "__function_table__" in existing:
+            d = existing["__function_table__"]
+            st.session_state[key] = pd.DataFrame(
+                {"x": d.get("x", []), "y": d.get("y", [])}
+            )
+        else:
+            st.session_state[key] = _sample_function_table(
+                set_name, param_name, x0, x1, n
+            )
+    edited = st.data_editor(
+        st.session_state[key].copy(),
+        num_rows="dynamic",
+        width="stretch",
+        column_config={
+            "x": st.column_config.NumberColumn("x", format="%.4g"),
+            "y": st.column_config.NumberColumn("y", format="%.4g"),
+        },
+        key=f"ft_edit_{param_name}",
+    )
+    b1, b2 = st.columns(2)
+    if b1.button("Apply table override", type="primary", key=f"ft_apply_{param_name}"):
+        try:
+            xs = [float(v) for v in edited["x"]]
+            ys = [float(v) for v in edited["y"]]
+        except (KeyError, TypeError, ValueError):
+            st.error("The table must have numeric x and y columns.")
+        else:
+            overrides[param_name] = {"__function_table__": {"x": xs, "y": ys}}
+            st.session_state.pop(key, None)
+            st.rerun()
+    if b2.button("Clear override", key=f"ft_clear_{param_name}"):
+        overrides.pop(param_name, None)
+        st.session_state.pop(key, None)
+        st.rerun()
+
+
+def _constant_override_input(sel: str, overrides: dict, row: dict | None) -> None:
+    """Number input for a single-constant override of parameter ``sel``."""
+    cur = overrides.get(sel)
+    if cur is None:
+        cur = (row or {}).get("value")
+    try:
+        cur_f = float(cur)
+    except (TypeError, ValueError):
+        cur_f = 0.0
+    new = st.number_input(
+        f"Constant value of `{sel}`", value=cur_f, format="%g", key=f"ptab_v_{sel}",
+    )
+    if new != cur_f:
+        overrides[sel] = new
+
+
 def render_param_table(set_name: str, overrides: dict) -> None:
     """Searchable full parameter table + targeted numeric edit (last section)."""
     import pandas as pd
@@ -437,7 +549,7 @@ def render_param_table(set_name: str, overrides: dict) -> None:
     editable = [r for r in matches if r["numeric"]]
     st.caption(
         f"{len(matches)} parameter(s) match · {len(editable)} numeric/editable · "
-        "the rest are function-valued and can be overridden with a constant below."
+        "the rest are function-valued and can be edited as a data table."
     )
 
     df = pd.DataFrame(
@@ -446,7 +558,7 @@ def render_param_table(set_name: str, overrides: dict) -> None:
                 "Parameter": r["name"],
                 "Value (base set)": r["value"],
                 "Type": ("numeric (editable)" if r["numeric"]
-                         else "function (const. override)"),
+                         else "function (editable table)"),
             }
             for r in matches[:500]
         ]
@@ -463,22 +575,15 @@ def render_param_table(set_name: str, overrides: dict) -> None:
         if row and not row["numeric"]:
             st.warning(
                 "This parameter is normally a **function** (e.g. OCP vs "
-                "stoichiometry, diffusivity vs concentration). Overriding it "
-                "with a single constant replaces it for the whole run — usually "
-                "only sensible as a deliberate experiment."
+                "stoichiometry, diffusivity vs concentration). Edit it as a "
+                "data table (recommended) or override with a single constant."
             )
-        cur = overrides.get(sel)
-        if cur is None:
-            cur = (row or {}).get("value")
-        try:
-            cur_f = float(cur)
-        except (TypeError, ValueError):
-            cur_f = 0.0
-        new = st.number_input(
-            f"Constant value of `{sel}`", value=cur_f, format="%g", key=f"ptab_v_{sel}",
-        )
-        if new != cur_f:
-            overrides[sel] = new
+            if st.button("Edit function table…", key=f"ptab_fn_{sel}"):
+                _edit_function_table(sel, overrides, set_name)
+            with st.expander("…or set a single constant instead", expanded=False):
+                _constant_override_input(sel, overrides, row)
+        else:
+            _constant_override_input(sel, overrides, row)
         if sel in overrides and st.button(
             f"Clear override: `{sel}`", key=f"ptab_c_{sel}"
         ):
