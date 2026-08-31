@@ -107,6 +107,7 @@ class PouchCellSimulation:
         thermal: str = "x-lumped",
         parameter_set: str = "Chen2020",
         initial_soc: float | None = 1.0,
+        initial_voltage: float | None = None,
         mesh: str | dict = "standard",
         solver: pybamm.Solver | None = None,
         output_variables: list[str] | None = None,
@@ -133,6 +134,7 @@ class PouchCellSimulation:
         self.dimensionality = dimensionality
         self.thermal = thermal
         self.initial_soc = initial_soc
+        self.initial_voltage = initial_voltage
 
         # --- size the electrodes so the cell delivers the target capacity ---
         self.sizing_history: list[float] = []
@@ -170,7 +172,11 @@ class PouchCellSimulation:
             except (TypeError, ValueError):
                 T_base = self.spec.ambient_temperature_K
             self.param.update(heat_pipe_overrides(self.spec, h_base, T_base))
-        if initial_soc is not None:
+        if initial_voltage is not None:
+            # start the cell at a target open-circuit voltage (PyBaMM
+            # interprets "3.9 V" as a voltage, 0-1 as a SOC)
+            self.param.set_initial_state(f"{initial_voltage:g} V")
+        elif initial_soc is not None:
             if not 0.0 <= initial_soc <= 1.0:
                 raise ValueError("initial_soc must be between 0 and 1.")
             self.param.set_initial_state(initial_soc)

@@ -319,6 +319,7 @@ def quick_thermal_preview(
             thermal="x-lumped",
             parameter_set=config.parameter_set,
             initial_soc=config.initial_soc,
+            initial_voltage=config.initial_voltage,
             mesh=PREVIEW_MESH,          # coarse -> preview runs in seconds
             solver=make_solver("default"),
             cooling=thermal.to_cooling(),

@@ -30,7 +30,7 @@ pouch_cell/                     # the tool package (installable: pip install -e 
 ├── thermal/                    # cooling presets + heat-pipe localization
 ├── registry.py                 # pluggable option registries (models/thermal/…)
 ├── cli.py                      # python -m pouch_cell
-├── ui/                         # Streamlit UI (app.py + pages/ + worker.py)
+├── ui/                         # Streamlit UI (Overview.py + pages/ + worker.py)
 └── plotting.py                 # stack diagram, discharge plots, 2D/3D maps
 cell_spec.py / parameters.py / model.py / sizing.py / simulation.py
                                 # legacy re-export shims (notebook stays compatible)

@@ -113,6 +113,7 @@ def _build_simulation(spec, config, model_name, dimensionality, thermal, mesh):
         thermal=thermal,
         parameter_set=config.parameter_set,
         initial_soc=config.initial_soc,
+        initial_voltage=config.initial_voltage,
         mesh=mesh,
         solver=make_solver(config.solver),
         output_variables=config.output_variables,

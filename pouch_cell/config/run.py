@@ -36,6 +36,7 @@ class RunConfig:
     analysis: str = "discharge"    # registry: discharge | tab (legacy single-run)
     protocol: dict | None = None   # serialized Protocol (takes precedence)
     initial_soc: float = 1.0
+    initial_voltage: float | None = None  # V-based init; overrides initial_soc
     C_rate: float = 1.0
     duration_s: float = 120.0
     cutoff_V: float | None = None  # None -> spec.lower_cutoff_V

@@ -18,6 +18,7 @@ from ..config.thermal import ThermalConfig
 
 _WORKER_MODULE = "pouch_cell.ui.worker"
 HISTORY_FILE = preset_io.PROJECT_ROOT / "pouch_output" / "history.jsonl"
+UI_STATE_FILE = preset_io.PROJECT_ROOT / "pouch_output" / "ui_state.json"
 
 # Drop the Design-page widget keys when loading a spec so they re-seed from it
 # (otherwise stale widget values trigger a spurious auto-size).
@@ -67,26 +68,75 @@ def normalise_config(cfg) -> list[str]:
     return fixed
 
 
+def _default_config() -> RunConfig:
+    """A fast first-run default: 1D DFN discharge to the cut-off."""
+    return RunConfig(
+        model_name="DFN", dimensionality=0, thermal="lumped", mesh="draft",
+        C_rate=1.0, duration_s=600.0, analysis="discharge", size_to_capacity=True,
+    )
+
+
+def save_state() -> None:
+    """Persist the current UI settings so a later session can restore them.
+
+    Called at the end of every page's ``render_sidebar()`` (cheap, ~2 KB), so
+    whatever the user last tweaked is what a fresh session opens with.
+    """
+    from dataclasses import asdict
+
+    try:
+        s = st.session_state
+        UI_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "spec": s.spec.as_dict(),
+            "config": s.config.as_dict(),
+            "thermal": asdict(s.thermal),
+            "protocol": s.protocol.as_dict(),
+        }
+        UI_STATE_FILE.write_text(json.dumps(data, default=str), encoding="utf-8")
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        pass
+
+
+def _load_ui_state() -> dict:
+    """Read the persisted UI settings (empty dict if none / corrupt)."""
+    try:
+        if UI_STATE_FILE.is_file():
+            return json.loads(UI_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    return {}
+
+
 def init_state() -> None:
-    """Seed ``st.session_state`` with the UI defaults (once)."""
+    """Seed ``st.session_state`` with the last-saved state (or UI defaults)."""
+    saved = _load_ui_state()
     if "spec" not in st.session_state:
-        st.session_state.spec = PouchCellSpec()
+        spec = saved.get("spec")
+        st.session_state.spec = PouchCellSpec(**spec) if spec else PouchCellSpec()
     if "config" not in st.session_state:
-        # a fast first run: 1D DFN discharge to the cut-off
-        st.session_state.config = RunConfig(
-            model_name="DFN",
-            dimensionality=0,
-            thermal="lumped",
-            mesh="draft",
-            C_rate=1.0,
-            duration_s=600.0,
-            analysis="discharge",
-            size_to_capacity=True,
-        )
+        cfg = saved.get("config")
+        if cfg:
+            try:
+                st.session_state.config = RunConfig(**cfg)
+            except Exception:  # noqa: BLE001 - stale state -> defaults
+                st.session_state.config = _default_config()
+        else:
+            st.session_state.config = _default_config()
     if "thermal" not in st.session_state:
-        st.session_state.thermal = ThermalConfig()
+        th = saved.get("thermal")
+        try:
+            st.session_state.thermal = ThermalConfig(**th) if th else ThermalConfig()
+        except Exception:  # noqa: BLE001
+            st.session_state.thermal = ThermalConfig()
     if "protocol" not in st.session_state:
-        st.session_state.protocol = Protocol.discharge_protocol()
+        proto = saved.get("protocol")
+        try:
+            st.session_state.protocol = (
+                Protocol.from_dict(proto) if proto else Protocol.discharge_protocol()
+            )
+        except Exception:  # noqa: BLE001
+            st.session_state.protocol = Protocol.discharge_protocol()
     if "history" not in st.session_state:
         st.session_state.history = []
     if "saved_count" not in st.session_state:
@@ -273,9 +323,23 @@ def _quick_knobs() -> None:
     )
     midx = meshes.index(cfg.mesh) if cfg.mesh in meshes else 0
     cfg.mesh = st.selectbox("Mesh", meshes, index=midx, key="sb_mesh")
-    cfg.initial_soc = st.slider(
-        "Initial SOC", 0.0, 1.0, float(cfg.initial_soc), 0.05, key="sb_soc"
+    init_mode = st.radio(
+        "Initial state by", ["SOC", "Voltage"], horizontal=True,
+        index=0 if cfg.initial_voltage is None else 1, key="sb_init_mode",
     )
+    if init_mode == "SOC":
+        cfg.initial_soc = st.slider(
+            "Initial SOC", 0.0, 1.0, float(cfg.initial_soc), 0.05, key="sb_soc"
+        )
+        cfg.initial_voltage = None
+    else:
+        cur_v = float(cfg.initial_voltage) if cfg.initial_voltage else 4.0
+        cur_v = min(max(cur_v, 2.5), 4.25)
+        cfg.initial_voltage = st.slider(
+            "Initial voltage (V)", 2.5, 4.25, cur_v, 0.01, key="sb_voltage",
+            help="Start the cell at this open-circuit voltage (overrides SOC).",
+        )
+        st.caption("Voltage mode overrides Initial SOC.")
 
 
 def _status_text(data: dict) -> str:
@@ -361,6 +425,7 @@ def render_sidebar() -> None:
 
     st.sidebar.divider()
     _run_panel()  # Run/Cancel + live status (fragment, updates every second)
+    save_state()  # persist whatever the user just tweaked
 
 
 def summary_markdown() -> str:

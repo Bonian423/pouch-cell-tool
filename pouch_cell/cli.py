@@ -107,7 +107,7 @@ def main(argv=None) -> int:
     if args.ui:
         import shutil
         from pathlib import Path
-        app = Path(__file__).resolve().parent / "ui" / "app.py"
+        app = Path(__file__).resolve().parent / "ui" / "Overview.py"
         print(f"Launching Streamlit UI: {app}")
         return subprocess.call([sys.executable, "-m", "streamlit", "run", str(app)])
 
