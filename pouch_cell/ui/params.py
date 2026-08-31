@@ -425,14 +425,18 @@ def render_param_table(set_name: str, overrides: dict) -> None:
     filt = st.text_input("Filter parameter names", key=f"ptab_f_{set_name}")
     matches = [r for r in rows if filt.lower() in r["name"].lower()]
     editable = [r for r in matches if r["numeric"]]
-    st.caption(f"{len(matches)} parameter(s) match · {len(editable)} numeric/editable")
+    st.caption(
+        f"{len(matches)} parameter(s) match · {len(editable)} numeric/editable · "
+        "the rest are function-valued and can be overridden with a constant below."
+    )
 
     df = pd.DataFrame(
         [
             {
                 "Parameter": r["name"],
                 "Value (base set)": r["value"],
-                "Type": "editable" if r["numeric"] else "read-only",
+                "Type": ("numeric (editable)" if r["numeric"]
+                         else "function (const. override)"),
             }
             for r in matches[:500]
         ]
@@ -440,16 +444,30 @@ def render_param_table(set_name: str, overrides: dict) -> None:
     st.dataframe(df, width="stretch", hide_index=True)
 
     sel = st.selectbox(
-        "Edit a numeric parameter",
-        ["— select —"] + [r["name"] for r in editable],
+        "Edit a parameter (numeric or function-valued)",
+        ["— select —"] + [r["name"] for r in matches],
         key=f"ptab_sel_{set_name}",
     )
     if sel != "— select —":
-        cur = float(overrides.get(sel, next(r["value"] for r in editable if r["name"] == sel)))
+        row = next((r for r in matches if r["name"] == sel), None)
+        if row and not row["numeric"]:
+            st.warning(
+                "This parameter is normally a **function** (e.g. OCP vs "
+                "stoichiometry, diffusivity vs concentration). Overriding it "
+                "with a single constant replaces it for the whole run — usually "
+                "only sensible as a deliberate experiment."
+            )
+        cur = overrides.get(sel)
+        if cur is None:
+            cur = (row or {}).get("value")
+        try:
+            cur_f = float(cur)
+        except (TypeError, ValueError):
+            cur_f = 0.0
         new = st.number_input(
-            f"Value of `{sel}`", value=cur, format="%g", key=f"ptab_v_{sel}",
+            f"Constant value of `{sel}`", value=cur_f, format="%g", key=f"ptab_v_{sel}",
         )
-        if new != cur:
+        if new != cur_f:
             overrides[sel] = new
         if sel in overrides and st.button(
             f"Clear override: `{sel}`", key=f"ptab_c_{sel}"
