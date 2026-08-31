@@ -31,6 +31,42 @@ _DESIGN_KEYS = (
 # --------------------------------------------------------------------------- #
 # Session state
 # --------------------------------------------------------------------------- #
+# Viable model/thermal/mesh combinations (so only working combos can be picked).
+def viable_thermal(dim: int) -> list[str]:
+    """Thermal submodels that are valid for a given dimensionality."""
+    if dim == 0:
+        return ["isothermal", "lumped", "x-full"]
+    return ["isothermal", "lumped", "x-lumped"]
+
+
+def viable_mesh(model_name: str) -> list[str]:
+    """Mesh presets that work with a model (true-3D FEM vs 2+1D)."""
+    return registry.options("mesh_3d" if model_name == "SPM_3D" else "mesh_21d")
+
+
+def normalise_config(cfg) -> list[str]:
+    """Force a viable (model, thermal, mesh, particle) combination in place.
+
+    Returns the names of the fields that were corrected.  Call this before
+    rendering dependent widgets so a widget's stored value is always a valid
+    option (and the underlying config never holds a broken combination).
+    """
+    fixed: list[str] = []
+    th = viable_thermal(cfg.dimensionality)
+    if cfg.thermal not in th:
+        cfg.thermal = "lumped"
+        fixed.append("thermal")
+    meshes = viable_mesh(cfg.model_name)
+    if cfg.mesh not in meshes:
+        cfg.mesh = meshes[0]
+        fixed.append("mesh")
+    # r=1 meshes (micro/coarse 2+1D) require uniform-profile particles
+    if cfg.mesh in ("micro_21d", "coarse_21d") and cfg.particle != "uniform profile":
+        cfg.particle = "uniform profile"
+        fixed.append("particle")
+    return fixed
+
+
 def init_state() -> None:
     """Seed ``st.session_state`` with the UI defaults (once)."""
     if "spec" not in st.session_state:
@@ -222,16 +258,76 @@ def load_result_into_session(entry: dict) -> None:
 def _quick_knobs() -> None:
     cfg = st.session_state.config
     models = registry.options("model")
-    idx = models.index(cfg.model_name) if cfg.model_name in models else 0
-    cfg.model_name = st.selectbox("Model", models, index=idx, key="sb_model")
-
-    mesh_opts = registry.options("mesh_3d" if cfg.model_name == "SPM_3D" else "mesh_21d")
-    midx = mesh_opts.index(cfg.mesh) if cfg.mesh in mesh_opts else 0
-    cfg.mesh = st.selectbox("Mesh", mesh_opts, index=midx, key="sb_mesh")
-
+    # read the intended model first (write-before-instantiate for the mesh guard)
+    intended_model = st.session_state.get("sb_model", cfg.model_name)
+    if intended_model not in models:
+        intended_model = models[0]
+    cfg.model_name = intended_model
+    meshes = viable_mesh(cfg.model_name)
+    if cfg.mesh not in meshes:
+        # safe: sb_mesh is not instantiated yet on this run
+        st.session_state["sb_mesh"] = meshes[0]
+        cfg.mesh = meshes[0]
+    cfg.model_name = st.selectbox(
+        "Model", models, index=models.index(cfg.model_name), key="sb_model"
+    )
+    midx = meshes.index(cfg.mesh) if cfg.mesh in meshes else 0
+    cfg.mesh = st.selectbox("Mesh", meshes, index=midx, key="sb_mesh")
     cfg.initial_soc = st.slider(
         "Initial SOC", 0.0, 1.0, float(cfg.initial_soc), 0.05, key="sb_soc"
     )
+
+
+def _status_text(data: dict) -> str:
+    """Human status line from a worker progress.json dict (stage + step)."""
+    parts = [str(data.get("stage") or "starting")]
+    if data.get("cycle") and data.get("cycle_total"):
+        parts.append(f"cycle {data['cycle']}/{data['cycle_total']}")
+    if data.get("step") and data.get("step_total"):
+        parts.append(f"step {data['step']}/{data['step_total']}")
+    if data.get("experiment_time") is not None:
+        parts.append(f"t={float(data['experiment_time']):.0f}s sim")
+    if data.get("elapsed_s") is not None:
+        parts.append(f"{float(data['elapsed_s']):.0f}s wall")
+    return " · ".join(parts)
+
+
+# public alias for use from page scripts
+status_text = _status_text
+
+
+@st.fragment(run_every=1.0)
+def _run_panel() -> None:
+    """Sidebar Run / Cancel + live status.
+
+    A self-refreshing fragment: it re-runs every second while a run is in
+    flight so the stage / cycle / step stay live, WITHOUT re-running the whole
+    page -- so the user can keep browsing and tweaking every tab.  When the
+    run finishes the fragment triggers one full re-run so Results shows it.
+    """
+    if st.session_state.run_state == "running":
+        data = poll_run()
+        st.sidebar.warning("Running…")
+        st.sidebar.caption(_status_text(data))
+        if st.sidebar.button("Cancel", width="stretch"):
+            cancel_run()
+            st.rerun()
+        if st.session_state.run_state == "idle":
+            st.rerun()  # finished -> refresh so the current page shows results
+    else:
+        if st.sidebar.button("Run", type="primary", width="stretch"):
+            launch_run()
+            st.rerun()
+        last = st.session_state.last_result
+        if last:
+            if last.get("error"):
+                st.sidebar.error(f"Last run failed: {last['error'][:120]}")
+            else:
+                st.sidebar.caption(
+                    f"last: V={last.get('final_V', float('nan')):.3f} V · "
+                    f"{last.get('delivered_Ah', float('nan')):.2f} Ah · "
+                    f"Tmax={last.get('Tmax_K', float('nan')):.1f} K"
+                )
 
 
 def _presets() -> None:
@@ -253,8 +349,8 @@ def _presets() -> None:
 def render_sidebar() -> None:
     """Render the shared sidebar (quick knobs + presets + Run/Cancel + status).
 
-    Every page calls this first.  While a run is in flight it polls the worker
-    and re-runs the page so the progress updates live.
+    Every page calls this first.  Run status lives in a self-refreshing
+    fragment so a run never blanks the page or blocks other tabs.
     """
     init_state()
     st.sidebar.title("Pouch cell")
@@ -264,38 +360,7 @@ def render_sidebar() -> None:
     _presets()
 
     st.sidebar.divider()
-    if st.session_state.run_state == "running":
-        st.sidebar.warning("Solving…")
-        if st.sidebar.button("Cancel", width="stretch"):
-            cancel_run()
-            st.rerun()
-    else:
-        if st.sidebar.button("Run", type="primary", width="stretch"):
-            launch_run()
-            st.rerun()
-
-    if st.session_state.run_state == "running":
-        data = poll_run()
-        elapsed = float(data.get("elapsed_s", 0.0))
-        frac = min(0.03 + (elapsed % 45.0) / 45.0 * 0.94, 0.97) if elapsed else 0.03
-        st.sidebar.progress(frac)
-        st.sidebar.caption(
-            f"stage: {data.get('stage', 'starting')} · {elapsed:.0f} s elapsed"
-        )
-        time.sleep(0.4)
-        st.rerun()
-
-    # brief status footer
-    last = st.session_state.last_result
-    if last and st.session_state.run_state == "idle":
-        if "error" in last:
-            st.sidebar.error(f"Last run failed: {last['error'][:120]}")
-        else:
-            st.sidebar.caption(
-                f"last: V={last.get('final_V', float('nan')):.3f} V · "
-                f"{last.get('delivered_Ah', float('nan')):.2f} Ah · "
-                f"Tmax={last.get('Tmax_K', float('nan')):.1f} K"
-            )
+    _run_panel()  # Run/Cancel + live status (fragment, updates every second)
 
 
 def summary_markdown() -> str:

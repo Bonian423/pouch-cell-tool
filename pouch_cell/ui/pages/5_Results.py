@@ -18,6 +18,67 @@ common.render_sidebar()
 
 st.title("Results")
 
+
+@st.fragment(run_every=1.0)
+def _live_run_section() -> None:
+    """While a run is in flight: draw a growing real-time voltage figure.
+
+    Polls the worker's ``progress.json`` and ``live_vt.json`` every second so
+    the user sees the voltage being plotted as the simulation runs, plus the
+    current stage / cycle / step in a status line.  Keeps the rest of the app
+    usable -- the page no longer blanks during a run.
+    """
+    import json
+
+    import pandas as pd
+
+    run_dir = Path(st.session_state.get("run_dir") or ".")
+    prog = run_dir / "progress.json"
+    data = {}
+    if prog.is_file():
+        try:
+            data = json.loads(prog.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = {}
+
+    cfg = st.session_state.config
+    proto = st.session_state.protocol
+    st.info("**Running…** — the voltage below plots live as the simulation "
+            "runs. You can still browse the other tabs.")
+    st.markdown(
+        f"**Now running:** `{cfg.model_name}` · dim {cfg.dimensionality} · "
+        f"{cfg.thermal} · {cfg.mesh} · protocol `{proto.type}` "
+        f"({len(proto.steps)} steps × {max(1, int(proto.cycles))} cycle(s))"
+    )
+
+    lv = run_dir / "live_vt.json"
+    if lv.is_file():
+        try:
+            lvd = json.loads(lv.read_text(encoding="utf-8"))
+            t = lvd.get("t", [])
+            v = lvd.get("V", [])
+            if t and v:
+                st.line_chart(
+                    pd.DataFrame({"Voltage [V]": v}, index=t),
+                    x_label="Time [s]",
+                    y_label="Voltage [V]",
+                )
+            else:
+                st.caption("Waiting for live voltage…")
+        except Exception:  # noqa: BLE001
+            st.caption("Waiting for live voltage…")
+    else:
+        st.caption("Waiting for live voltage…")
+
+    st.caption(f"`{common.status_text(data)}`")
+    if st.session_state.get("run_state") != "running":
+        st.rerun()
+
+
+if st.session_state.get("run_state") == "running":
+    _live_run_section()
+    st.stop()
+
 last = st.session_state.last_result
 if last is None:
     st.info("No run yet — press **Run** in the sidebar (or load a saved run).")

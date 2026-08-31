@@ -257,6 +257,7 @@ class PouchCellSimulation:
     def run_experiment_obj(
         self,
         experiment: pybamm.Experiment,
+        callbacks: list | None = None,
         **sim_kwargs,
     ) -> pybamm.Solution:
         """Run a pre-built :class:`pybamm.Experiment`.
@@ -266,6 +267,8 @@ class PouchCellSimulation:
         ``termination`` conditions (used by multi-step protocols).
         """
         self.sim = pybamm.Simulation(**self._sim_kwargs, experiment=experiment)
+        if callbacks:
+            sim_kwargs["callbacks"] = callbacks
         self.solution = self.sim.solve(**sim_kwargs)
         return self.solution
 

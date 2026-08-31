@@ -30,6 +30,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import pybamm  # noqa: E402  (after Agg backend; used by _LiveCallback)
+
 
 def _write_progress(outdir: Path, **kw) -> None:
     data = {"pid": os.getpid()}
@@ -42,8 +44,135 @@ def _write_progress(outdir: Path, **kw) -> None:
 def _watcher(outdir: Path, stop: threading.Event) -> None:
     t0 = time.time()
     while not stop.is_set():
-        _write_progress(outdir, status="running", elapsed_s=round(time.time() - t0, 1))
+        # preserve stage / cycle / step written by the main thread or callbacks
+        data = {}
+        prog = outdir / "progress.json"
+        if prog.is_file():
+            try:
+                data = json.loads(prog.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                data = {}
+        data.update({"pid": os.getpid(), "status": "running",
+                     "elapsed_s": round(time.time() - t0, 1)})
+        prog.write_text(json.dumps(data), encoding="utf-8")
         time.sleep(1.0)
+
+
+class _LiveCallback(pybamm.callbacks.Callback):
+    """PyBaMM callback that streams stage / cycle / step to ``progress.json``.
+
+    Attached to the real solve so the UI status bar shows exactly which step
+    the simulation is on while it runs.
+    """
+
+    def __init__(self, outdir: Path) -> None:
+        self.outdir = outdir
+
+    def _set(self, **kw) -> None:
+        _write_progress(self.outdir, status="running", stage="solving", **kw)
+
+    def on_experiment_start(self, logs) -> None:  # noqa: D102
+        self._set(cycle=1, step=1)
+
+    def on_cycle_start(self, logs) -> None:  # noqa: D102
+        cyc = logs.get("cycle number", (1, 1))
+        self._set(cycle=cyc[0], cycle_total=cyc[1],
+                  experiment_time=logs.get("experiment time"))
+
+    def on_step_start(self, logs) -> None:  # noqa: D102
+        cyc = logs.get("cycle number", (1, 1))
+        stp = logs.get("step number", (1, 1))
+        self._set(cycle=cyc[0], cycle_total=cyc[1],
+                  step=stp[0], step_total=stp[1],
+                  experiment_time=logs.get("experiment time"))
+
+    def on_step_end(self, logs) -> None:  # noqa: D102
+        self._set(experiment_time=logs.get("experiment time"))
+
+    def on_cycle_end(self, logs) -> None:  # noqa: D102
+        self._set(experiment_time=logs.get("experiment time"))
+
+    def on_experiment_end(self, logs) -> None:  # noqa: D102
+        pass
+
+    def on_experiment_error(self, logs) -> None:  # noqa: D102
+        pass
+
+
+def _run_live_preview(outdir: Path, spec, config, proto) -> None:
+    """Stream a fast 1D voltage preview of the protocol to ``live_vt.json``.
+
+    Best-effort: a cheap 1D DFN solve of the same protocol, run step-by-step
+    (and sub-chunked for long duration steps) with ``starting_solution``
+    chaining, writing the cumulative ``(t, V)`` after every chunk so the UI can
+    draw a growing real-time voltage figure.  Never raises.
+    """
+    import math
+
+    import numpy as np
+    import pybamm
+
+    from ..core.experiment import _build_simulation
+    from ..config.protocol import Step
+
+    try:
+        sim = _build_simulation(spec, config, "DFN", 0, "lumped", "draft")
+    except Exception:  # noqa: BLE001 - preview is best-effort
+        return
+
+    # plan: split duration-based steps into sub-chunks, capped so the whole
+    # preview stays cheap (<=~30 chunks even for hour-long protocols)
+    steps = list(proto.steps) or [Step(kind="discharge", c_rate=1.0, duration_s=60.0)]
+    total_dur = 0.0
+    n_cycles = max(1, int(proto.cycles))
+    for _ in range(n_cycles):
+        for stp in steps:
+            if stp.duration_s and stp.duration_s > 0:
+                total_dur += float(stp.duration_s)
+    chunk_s = max(1.0, total_dur / 30.0)
+
+    plan: list[str] = []
+    for _ in range(n_cycles):
+        for stp in steps:
+            if stp.duration_s and stp.duration_s > 0:
+                d = float(stp.duration_s)
+                n = max(1, int(math.ceil(d / chunk_s)))
+                for k in range(n):
+                    sub = Step(
+                        kind=stp.kind, c_rate=stp.c_rate, current_A=stp.current_A,
+                        power_W=stp.power_W,
+                        duration_s=min(chunk_s, d - k * chunk_s), cutoff_V=None,
+                        hold_voltage_V=stp.hold_voltage_V,
+                        cutoff_current_C=stp.cutoff_current_C,
+                    )
+                    plan.append(sub.to_string(spec.capacity_Ah))
+            else:
+                plan.append(stp.to_string(spec.capacity_Ah))
+    n_total = len(plan)
+
+    prev = None
+    for i, step_str in enumerate(plan):
+        try:
+            exp = pybamm.Experiment([step_str], period=None)
+            sim.sim = pybamm.Simulation(**sim._sim_kwargs, experiment=exp)
+            sol = sim.sim.solve(starting_solution=prev)
+            prev = sim.sim.solution if sim.sim.solution is not None else sol
+            # the chained solution is CUMULATIVE: it already holds the whole
+            # (t, V) history from t=0, so write it directly (no t_off math)
+            tt = np.asarray(sol["Time [s]"].entries)
+            vv = np.asarray(sol["Voltage [V]"].entries)
+            (outdir / "live_vt.json").write_text(
+                json.dumps({"t": tt.tolist(), "V": vv.tolist()}, default=float),
+                encoding="utf-8",
+            )
+            _write_progress(
+                outdir, status="running", stage="live preview",
+                cycle=1, cycle_total=max(1, int(proto.cycles)),
+                step=i + 1, step_total=n_total,
+                experiment_time=float(tt[-1]) if len(tt) else 0.0,
+            )
+        except Exception:  # noqa: BLE001 - stop streaming on any chunk failure
+            return
 
 
 def _to_timeseries(arr) -> np.ndarray:
@@ -193,8 +322,19 @@ def main(argv=None) -> int:
             metrics = collect_metrics(sim, sol, config)
             metrics["analysis"] = "tab"
         else:
+            # stream a fast 1D voltage preview first (best-effort) so the UI can
+            # draw a growing real-time voltage figure during the run
+            if config.protocol:
+                from ..config.protocol import Protocol
+
+                proto = Protocol.from_dict(config.protocol)
+                _write_progress(outdir, status="running", stage="live preview")
+                _run_live_preview(outdir, spec, config, proto)
             _write_progress(outdir, status="running", stage="solving")
-            sim, sol, metrics = run(config, spec=spec, verbose=False)
+            live_cb = _LiveCallback(outdir)
+            sim, sol, metrics = run(
+                config, spec=spec, verbose=False, callbacks=[live_cb]
+            )
 
         _write_progress(outdir, status="running", stage="post-processing")
         metrics["figures"] = _save_figures(outdir, sim, sol, config, spec, metrics)

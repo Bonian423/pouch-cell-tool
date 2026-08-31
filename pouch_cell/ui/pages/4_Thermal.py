@@ -92,20 +92,35 @@ if cfg.model_name == "SPM_3D":
 # ------------------------------------------------------------- quick thermal map
 st.markdown("#### Thermal map preview")
 st.caption(
-    "Run a fast SPM 2+1D `micro_21d` 5-second solve and draw the temperature / "
+    "Run a fast SPM 2+1D `micro_21d` solve and draw the temperature / "
     "current-density / Ohmic-heating maps right here, so you can iterate on "
-    "cooling and heat-pipe settings before a full run."
+    "cooling and heat-pipe settings before a full run. Pick a **protocol step** "
+    "to draw the map at the end of that step instead of a fresh 5-second "
+    "discharge."
 )
+proto = st.session_state.protocol
+_step_labels = ["Fresh 5 s discharge"] + [
+    f"step {i + 1}: {s.to_string(spec.capacity_Ah)}"
+    for i, s in enumerate(proto.steps)
+]
+prev_step = st.selectbox("Preview at", _step_labels, key="t_prev_step")
+
 c1, c2 = st.columns([1, 3])
 if c1.button("Generate thermal map", type="primary"):
     with st.spinner("Running quick 2+1D solve…"):
-        st.session_state["quick_map"] = quick_thermal_preview(
-            spec, cfg, thermal
-        )
+        if prev_step == "Fresh 5 s discharge":
+            st.session_state["quick_map"] = quick_thermal_preview(
+                spec, cfg, thermal
+            )
+        else:
+            idx = _step_labels.index(prev_step) - 1
+            st.session_state["quick_map"] = quick_thermal_preview(
+                spec, cfg, thermal, steps=proto.steps, step_idx=idx
+            )
 qm = st.session_state.get("quick_map")
 if qm:
     if qm.get("ok"):
-        st.image(qm["figure"], caption="Thermal preview (SPM 2+1D, 5 s)", width="stretch")
+        st.image(qm["figure"], caption=f"Thermal preview ({qm.get('note', '')})", width="stretch")
         if qm.get("warning"):
             st.warning(qm["warning"])
         m = qm.get("metrics", {})

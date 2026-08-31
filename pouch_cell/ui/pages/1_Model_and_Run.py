@@ -15,6 +15,26 @@ st.title("Model & Run")
 cfg = st.session_state.config
 
 # ---------------------------------------------------------------- model
+# Guards keep only viable combinations selectable.  Read the *intended*
+# selection from the widget keys first, then auto-correct the dependent fields
+# BEFORE their widgets are instantiated (Streamlit forbids writing a widget's
+# key after it has been created in the same run).
+intended_dim = st.session_state.get("m_dim", cfg.dimensionality)
+cfg.dimensionality = intended_dim
+thermal_opts = common.viable_thermal(cfg.dimensionality)
+if cfg.thermal not in thermal_opts:
+    st.session_state["m_thermal"] = "lumped"
+    cfg.thermal = "lumped"
+
+intended_model = st.session_state.get("m_model", cfg.model_name)
+cfg.model_name = intended_model
+mesh_opts = common.viable_mesh(cfg.model_name)
+if cfg.mesh not in mesh_opts:
+    st.session_state["m_mesh"] = mesh_opts[0]
+    cfg.mesh = mesh_opts[0]
+if cfg.mesh in ("micro_21d", "coarse_21d"):
+    cfg.particle = "uniform profile"
+
 st.markdown("#### Model")
 c1, c2, c3 = st.columns(3)
 cfg.dimensionality = c1.selectbox(
@@ -24,8 +44,9 @@ cfg.dimensionality = c1.selectbox(
          "current collectors (needed for tab/thermal maps).",
 )
 cfg.thermal = c2.selectbox(
-    "Thermal", registry.options("thermal"),
-    index=registry.options("thermal").index(cfg.thermal), key="m_thermal",
+    "Thermal", thermal_opts,
+    index=thermal_opts.index(cfg.thermal), key="m_thermal",
+    help="Only thermal submodels valid for the chosen dimensionality are listed.",
 )
 cfg.model_name = c3.selectbox(
     "Model", registry.options("model"),
@@ -49,8 +70,6 @@ model_help = {
 with st.expander("What is this model?"):
     st.markdown(model_help.get(cfg.model_name, ""))
 
-if cfg.thermal == "x-lumped" and cfg.dimensionality == 0:
-    st.warning("x-lumped requires dimensionality >= 1; will fall back to lumped.")
 if cfg.model_name == "SPM_3D":
     cfg.full_stack_3d = st.checkbox(
         "Full-stack 3D geometry (span all layers in x)",
@@ -59,7 +78,6 @@ if cfg.model_name == "SPM_3D":
 
 # ---------------------------------------------------------------- mesh
 st.markdown("#### Mesh")
-mesh_opts = registry.options("mesh_3d" if cfg.model_name == "SPM_3D" else "mesh_21d")
 cfg.mesh = st.selectbox(
     "Mesh density", mesh_opts,
     index=mesh_opts.index(cfg.mesh) if cfg.mesh in mesh_opts else 0,
@@ -71,6 +89,11 @@ if cfg.model_name == "SPM_3D":
     st.caption(
         "3D FEM solves are intractable beyond ~seconds at fine element sizes; "
         "`draft_3d` is the only practical choice for a full pouch."
+    )
+elif cfg.mesh in ("micro_21d", "coarse_21d"):
+    st.caption(
+        "`micro_21d` / `coarse_21d` use r=1 particle meshes, so the particle "
+        "model is locked to `uniform profile`."
     )
 
 # ---------------------------------------------------------------- parameter set

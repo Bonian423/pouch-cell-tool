@@ -153,6 +153,7 @@ def run_protocol(
     spec: PouchCellSpec,
     proto: Protocol,
     note: str = "",
+    callbacks: list | None = None,
 ):
     """Run a multi-step :class:`Protocol` and return ``(sim, sol, metrics)``."""
     model, dim, thermal, mesh = _resolve_protocol_model(config, proto)
@@ -163,7 +164,7 @@ def run_protocol(
         temperature=proto.temperature_K,
         termination=proto.termination or None,
     )
-    sol = sim.run_experiment_obj(experiment)
+    sol = sim.run_experiment_obj(experiment, callbacks=callbacks)
     metrics = collect_metrics(sim, sol, config)
     # report the *actually resolved* model/dim/thermal/mesh (the protocol may
     # have forced SPM 2+1D x-lumped for thermal maps)
@@ -179,7 +180,8 @@ def run_protocol(
     return sim, sol, metrics
 
 
-def run(config: RunConfig, spec: PouchCellSpec | None = None, verbose: bool = True):
+def run(config: RunConfig, spec: PouchCellSpec | None = None, verbose: bool = True,
+        callbacks: list | None = None):
     """Run a :class:`RunConfig` and return ``(sim, sol, metrics)``.
 
     Dispatch order: ``config.protocol`` (multi-step) -> ``tab`` analysis ->
@@ -191,7 +193,7 @@ def run(config: RunConfig, spec: PouchCellSpec | None = None, verbose: bool = Tr
     # --- multi-step protocol (takes precedence) --------------------------
     if config.protocol:
         proto = Protocol.from_dict(config.protocol)
-        return run_protocol(config, spec, proto)
+        return run_protocol(config, spec, proto, callbacks=callbacks)
 
     # --- tab-driven resistive-heating analysis ----------------------------
     if config.analysis == "tab":

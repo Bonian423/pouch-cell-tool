@@ -233,11 +233,23 @@ def _friendly_preview_error(err) -> str:
     return msg
 
 
-def quick_thermal_preview(spec, config, thermal) -> dict:
+def quick_thermal_preview(
+    spec,
+    config,
+    thermal,
+    steps: list | None = None,
+    step_idx: int | None = None,
+) -> dict:
     """Run a fast SPM 2+1D micro_21d solve and save thermal maps.
 
+    By default it is a fresh 5-second 1C discharge.  If ``steps`` (a list of
+    :class:`~pouch_cell.config.protocol.Step`) and ``step_idx`` are given, it
+    instead runs the protocol up to the *end* of ``steps[step_idx]`` and draws
+    the map at that point (so the preview is "stationed on" a chosen step).
+
     Returns a dict ``{"ok": bool, "figure": str|None, "error": str|None,
-    "metrics": dict}``.  The figure path is a PNG the page can ``st.image``.
+    "note": str, "metrics": dict}``.  The figure path is a PNG the page can
+    ``st.image``.
 
     Degenerate initial states (initial voltage at/below the discharge cut-off,
     usually from a bad parameter override or a low Initial SOC) and
@@ -245,8 +257,10 @@ def quick_thermal_preview(spec, config, thermal) -> dict:
     a raw PyBaMM traceback.
     """
     import matplotlib.pyplot as plt
+    import pybamm
 
     from .. import plotting
+    from ..config.protocol import Protocol
     from ..core.experiment import collect_metrics
     from ..core.simulation import PouchCellSimulation
     from ..core.solvers import make_solver
@@ -268,16 +282,28 @@ def quick_thermal_preview(spec, config, thermal) -> dict:
         )
         if config.extra_overrides:
             sim.param.update(config.extra_overrides)
-        sol = sim.discharge(C_rate=config.C_rate, duration_s=5.0)
+        if steps and step_idx is not None:
+            proto = Protocol(type="custom", steps=list(steps[: step_idx + 1]),
+                             thermal_maps=False)
+            exp = pybamm.Experiment(
+                proto.experiment_cycles(spec.capacity_Ah), period=None
+            )
+            sol = sim.run_experiment_obj(exp)
+            note = f"after step {step_idx + 1} ({len(steps)}-step protocol)"
+        else:
+            sol = sim.discharge(C_rate=config.C_rate, duration_s=5.0)
+            note = "fresh 5 s discharge"
         metrics = collect_metrics(sim, sol, config)
         fig = plotting.plot_tab_heating(sol, spec, param=sim.param)
         path = QUICK_MAP_DIR / "thermal_preview.png"
         fig.savefig(path, dpi=110, bbox_inches="tight")
         plt.close(fig)
-        return {"ok": True, "figure": str(path), "error": None, "metrics": metrics}
+        return {"ok": True, "figure": str(path), "error": None,
+                "note": note, "metrics": metrics}
     except Exception as err:  # noqa: BLE001
         return {"ok": False, "figure": None,
-                "error": _friendly_preview_error(err), "metrics": {}}
+                "error": _friendly_preview_error(err), "metrics": {},
+                "note": ""}
 
 
 def example_json(name: str) -> str:
