@@ -58,3 +58,66 @@ def delete_preset(name: str) -> None:
     path = preset_path(name)
     if path.is_file():
         os.remove(path)
+
+
+# --------------------------------------------------------------------------- #
+# User-defined parameter sets (overrides on top of a PyBaMM base set)
+# --------------------------------------------------------------------------- #
+USER_PARAM_DIR = PROJECT_ROOT / "pouch_output" / "parameter_sets"
+
+
+def user_param_path(name: str) -> Path:
+    """Path for a named custom parameter set (name may omit ``.json``)."""
+    if not name.lower().endswith(".json"):
+        name += ".json"
+    return USER_PARAM_DIR / name
+
+
+def list_user_parameter_sets() -> list[str]:
+    """Names (without extension) of the saved custom parameter sets."""
+    if not USER_PARAM_DIR.is_dir():
+        return []
+    return sorted(p.stem for p in USER_PARAM_DIR.glob("*.json"))
+
+
+def save_user_parameter_set(name: str, base_set: str, overrides: dict) -> Path:
+    """Write a custom parameter set ``{base, overrides}`` and return its path."""
+    USER_PARAM_DIR.mkdir(parents=True, exist_ok=True)
+    path = user_param_path(name)
+    path.write_text(
+        json.dumps({"base": base_set, "overrides": overrides or {}}, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_user_parameter_set(name: str) -> dict:
+    """Load a custom parameter set as ``{"base": ..., "overrides": {...}}``."""
+    path = user_param_path(name)
+    if not path.is_file():
+        raise FileNotFoundError(f"No custom parameter set '{name}' at {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def delete_user_parameter_set(name: str) -> None:
+    """Delete a saved custom parameter set."""
+    path = user_param_path(name)
+    if path.is_file():
+        os.remove(path)
+
+
+def is_user_parameter_set(name: str) -> bool:
+    """True if ``name`` matches a saved custom parameter set."""
+    return name in list_user_parameter_sets()
+
+
+def resolve_parameter_set(name: str) -> tuple[str, dict]:
+    """Return ``(base PyBaMM set name, extra overrides)`` for a set name.
+
+    Built-in sets -> ``(name, {})``; a saved custom set -> its stored
+    ``(base, overrides)`` (so nesting a custom set inside another is avoided).
+    """
+    if is_user_parameter_set(name):
+        uset = load_user_parameter_set(name)
+        return uset.get("base", name), dict(uset.get("overrides") or {})
+    return name, {}

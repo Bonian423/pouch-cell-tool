@@ -22,10 +22,20 @@ from pathlib import Path
 # Parameter introspection
 # --------------------------------------------------------------------------- #
 def load_pv(set_name: str):
-    """Return the ``pybamm.ParameterValues`` for ``set_name`` (lazy import)."""
+    """Return the ``pybamm.ParameterValues`` for ``set_name`` (lazy import).
+
+    A saved custom parameter set is resolved to its base set + overrides so the
+    table / curated knobs reflect the live edited values.
+    """
     import pybamm
 
-    return pybamm.ParameterValues(set_name)
+    from ..config.io import resolve_parameter_set
+
+    base, overrides = resolve_parameter_set(set_name)
+    pv = pybamm.ParameterValues(base)
+    if overrides:
+        pv.update(overrides)
+    return pv
 
 
 def _to_scalar(v):

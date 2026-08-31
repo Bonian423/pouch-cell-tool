@@ -6,6 +6,7 @@ Protocols page; this page only tunes the underlying battery model.
 import streamlit as st
 
 from pouch_cell import registry
+from pouch_cell.config import io as preset_io
 from pouch_cell.ui import common
 
 common.init_state()
@@ -106,6 +107,12 @@ cfg.parameter_set = st.selectbox(
 info = registry.PARAMETER_SET_INFO.get(cfg.parameter_set)
 if info:
     st.info(info)
+elif preset_io.is_user_parameter_set(cfg.parameter_set):
+    base, _ = preset_io.resolve_parameter_set(cfg.parameter_set)
+    st.info(
+        f"`{cfg.parameter_set}` is a **custom parameter set** — base "
+        f"`{base}` plus your saved overrides (edit / re-save on the Design page)."
+    )
 with st.expander("What is this set? / chemistry guide"):
     st.markdown(
         "The parameter set defines the **electrode chemistries**, electrolyte "

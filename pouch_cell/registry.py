@@ -128,7 +128,17 @@ _REGISTRY: dict[str, dict] = {
 
 def options(category: str) -> list[str]:
     """List the registered option names for ``category`` (e.g. 'model')."""
-    return list(_REGISTRY.get(category, {}))
+    names = list(_REGISTRY.get(category, {}))
+    if category == "parameter_set":
+        # dynamically include user-saved custom parameter sets (live from disk)
+        try:
+            from .config.io import list_user_parameter_sets
+            for _n in list_user_parameter_sets():
+                if _n not in names:
+                    names.append(_n)
+        except Exception:  # noqa: BLE001 - never break the UI for this
+            pass
+    return names
 
 
 def get(category: str, name: str, default=None):

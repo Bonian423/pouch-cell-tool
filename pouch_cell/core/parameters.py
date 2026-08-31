@@ -39,12 +39,21 @@ def build_parameter_values(
         capacity and thermal settings applied.
     """
     if parameter_set not in PARAMETER_SETS:
-        raise ValueError(
-            f"Unknown parameter set '{parameter_set}'. "
-            f"Choose from {PARAMETER_SETS}."
-        )
+        from ..config.io import resolve_parameter_set
 
-    param = pybamm.ParameterValues(parameter_set)
+        base_set, set_overrides = resolve_parameter_set(parameter_set)
+        if base_set not in PARAMETER_SETS:
+            raise ValueError(
+                f"Unknown parameter set '{parameter_set}'. "
+                f"Choose from {PARAMETER_SETS}."
+            )
+        param = pybamm.ParameterValues(base_set)
+        # a custom set's saved electrochemistry overrides win over the base
+        # set defaults (geometry/thermal applied below still take precedence)
+        if set_overrides:
+            param.update(set_overrides)
+    else:
+        param = pybamm.ParameterValues(parameter_set)
 
     # Geometry, stack architecture, capacity and voltage limits
     param.update(spec.geometry_overrides())
