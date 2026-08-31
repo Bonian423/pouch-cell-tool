@@ -202,6 +202,12 @@ EXAMPLE_OVERRIDES: list[tuple[str, dict]] = [
 # --------------------------------------------------------------------------- #
 QUICK_MAP_DIR = Path(__file__).resolve().parents[2] / "pouch_output" / "quick_maps"
 
+# Coarse 2+1D mesh used ONLY for the in-tab quick preview: r=1 is required for
+# the 2+1D thermal submodel (with "uniform profile" particles), and the reduced
+# y/z plane makes a preview solve run in seconds instead of minutes. The full
+# run keeps using the normal micro_21d / draft meshes.
+PREVIEW_MESH = {"x_n": 4, "x_s": 4, "x_p": 4, "r_n": 1, "r_p": 1, "y": 8, "z": 12}
+
 
 def _friendly_preview_error(err) -> str:
     """Turn a raw PyBaMM exception into an actionable one-liner."""
@@ -218,6 +224,13 @@ def _friendly_preview_error(err) -> str:
             "The initial cell state is outside physical bounds — check Initial "
             "SOC and any parameter overrides (porosity, concentrations, radii)."
         )
+    if "Maximum voltage" in msg and "initial conditions" in msg:
+        return (
+            "The cell's initial voltage is already ABOVE the upper cut-off "
+            "(4.2 V) — usually an override pushing the OCP up, or charging from "
+            "a high SOC at high C-rate. Lower the Initial SOC / C-rate or reset "
+            "the overrides."
+        )
     if ("non-positive at initial conditions" in msg
             or "Minimum voltage" in msg
             or "IDA_CONV_FAIL" in msg
@@ -231,6 +244,38 @@ def _friendly_preview_error(err) -> str:
             "overrides) and set Initial SOC back up, then retry."
         )
     return msg
+
+
+def _preview_voltage_warning(sol, spec) -> str | None:
+    """Return a warning when the preview's end-state voltage looks unphysical.
+
+    The 2+1D SPM includes current-collector resistance, so an aggressive step
+    (e.g. a 3 C charge from a high SOC) can push the terminal voltage far above
+    the 4.2 V upper cut-off and the solver stops early. The temperature map is
+    still meaningful up to the last good state, so we show it but flag the
+    voltage so the caption doesn't present a nonsense number.
+    """
+    import numpy as np
+
+    try:
+        V = float(np.asarray(sol["Voltage [V]"].entries)[-1])
+    except Exception:  # noqa: BLE001
+        return None
+    if V > spec.upper_cutoff_V + 0.4:
+        return (
+            f"End-state voltage {V:.2f} V is well above the "
+            f"{spec.upper_cutoff_V:.1f} V upper cut-off — the preview step drove "
+            "the 2+1D terminal voltage into a high over-potential regime (large "
+            "tab current). The map shows the last good state; try a lower "
+            "C-rate, a shorter step, or a lower Initial SOC."
+        )
+    if V < spec.lower_cutoff_V - 0.2:
+        return (
+            f"End-state voltage {V:.2f} V is near/below the "
+            f"{spec.lower_cutoff_V:.1f} V cut-off — the cell is deeply "
+            "discharged at this preview point."
+        )
+    return None
 
 
 def quick_thermal_preview(
@@ -274,14 +319,19 @@ def quick_thermal_preview(
             thermal="x-lumped",
             parameter_set=config.parameter_set,
             initial_soc=config.initial_soc,
-            mesh="micro_21d",
+            mesh=PREVIEW_MESH,          # coarse -> preview runs in seconds
             solver=make_solver("default"),
             cooling=thermal.to_cooling(),
-            size_to_capacity=config.size_to_capacity,
+            size_to_capacity=False,     # skip the expensive full-build sizing
             particle="uniform profile",
         )
-        if config.extra_overrides:
-            sim.param.update(config.extra_overrides)
+        # fold in BOTH override sources (Design-page electrochemistry overrides
+        # and this page's raw overrides) -- previously only the Design ones
+        # reached the preview.
+        overrides = dict(config.extra_overrides or {})
+        overrides.update(thermal.extra_overrides or {})
+        if overrides:
+            sim.param.update(overrides)
         if steps and step_idx is not None:
             proto = Protocol(type="custom", steps=list(steps[: step_idx + 1]),
                              thermal_maps=False)
@@ -294,16 +344,17 @@ def quick_thermal_preview(
             sol = sim.discharge(C_rate=config.C_rate, duration_s=5.0)
             note = "fresh 5 s discharge"
         metrics = collect_metrics(sim, sol, config)
+        warning = _preview_voltage_warning(sol, spec)
         fig = plotting.plot_tab_heating(sol, spec, param=sim.param)
         path = QUICK_MAP_DIR / "thermal_preview.png"
         fig.savefig(path, dpi=110, bbox_inches="tight")
         plt.close(fig)
         return {"ok": True, "figure": str(path), "error": None,
-                "note": note, "metrics": metrics}
+                "note": note, "warning": warning, "metrics": metrics}
     except Exception as err:  # noqa: BLE001
         return {"ok": False, "figure": None,
                 "error": _friendly_preview_error(err), "metrics": {},
-                "note": ""}
+                "note": "", "warning": None}
 
 
 def example_json(name: str) -> str:

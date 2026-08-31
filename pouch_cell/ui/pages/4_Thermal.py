@@ -92,7 +92,7 @@ if cfg.model_name == "SPM_3D":
 # ------------------------------------------------------------- quick thermal map
 st.markdown("#### Thermal map preview")
 st.caption(
-    "Run a fast SPM 2+1D `micro_21d` solve and draw the temperature / "
+    "Run a fast coarse 2+1D SPM solve and draw the temperature / "
     "current-density / Ohmic-heating maps right here, so you can iterate on "
     "cooling and heat-pipe settings before a full run. Pick a **protocol step** "
     "to draw the map at the end of that step instead of a fresh 5-second "
