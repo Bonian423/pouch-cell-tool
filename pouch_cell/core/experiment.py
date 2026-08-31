@@ -68,7 +68,13 @@ def collect_metrics(sim: PouchCellSimulation, sol, config: RunConfig) -> dict:
 
 
 def collect_step_metrics(sol) -> list[dict]:
-    """Per-step metrics for a multi-step solution (cycles -> steps)."""
+    """Per-step metrics for a multi-step solution (cycles -> steps).
+
+    Each row carries the end-of-step time, voltage, discharge capacity and
+    end-of-step temperature (best-effort) so the UI table shows how the
+    electrochemical AND thermal state evolve step by step (the thermal state
+    is inherited exactly across steps -- see the notebook verification).
+    """
     rows: list[dict] = []
     cycles = getattr(sol, "cycles", None) or []
     for ci, cycle in enumerate(cycles):
@@ -79,9 +85,22 @@ def collect_step_metrics(sol) -> list[dict]:
                 Ah = float(np.asarray(step["Discharge capacity [A.h]"].entries)[-1])
             except KeyError:
                 V = Ah = float("nan")
+            T_end = float("nan")
+            for _tname in (
+                "Volume-averaged cell temperature [K]",
+                "X-averaged cell temperature [K]",
+                "Cell temperature [K]",
+            ):
+                try:
+                    # [..., -1] = end-of-step frame; .max() = hot spot (2+1D)
+                    T_end = float(np.asarray(step[_tname].entries)[..., -1].max())
+                    break
+                except KeyError:
+                    continue
             rows.append(
                 {"cycle": ci + 1, "step": si + 1,
-                 "t_end_s": float(step.t[-1]), "V_end": V, "Ah": Ah}
+                 "t_end_s": float(step.t[-1]), "V_end": V, "Ah": Ah,
+                 "T_end_K": T_end}
             )
     return rows
 

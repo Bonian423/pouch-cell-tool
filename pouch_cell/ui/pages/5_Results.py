@@ -73,6 +73,7 @@ if steps:
             {
                 "cycle": r["cycle"], "step": r["step"],
                 "t_end_s": r["t_end_s"], "V_end": r["V_end"], "Ah": r["Ah"],
+                "T_end_K": r.get("T_end_K", float("nan")),
             }
             for r in steps
         ],
