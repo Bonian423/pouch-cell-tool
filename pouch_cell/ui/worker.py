@@ -33,11 +33,23 @@ matplotlib.use("Agg")
 import pybamm  # noqa: E402  (after Agg backend; used by _LiveCallback)
 
 
+def _json_default(o):
+    """JSON fallback so numpy scalars (PyBaMM log values) serialise cleanly."""
+    try:
+        import numpy as np
+
+        if isinstance(o, np.generic):
+            return o.item()
+    except Exception:  # noqa: BLE001
+        pass
+    return str(o)
+
+
 def _write_progress(outdir: Path, **kw) -> None:
     data = {"pid": os.getpid()}
     data.update(kw)
     (outdir / "progress.json").write_text(
-        json.dumps(data), encoding="utf-8"
+        json.dumps(data, default=_json_default), encoding="utf-8"
     )
 
 
@@ -54,7 +66,7 @@ def _watcher(outdir: Path, stop: threading.Event) -> None:
                 data = {}
         data.update({"pid": os.getpid(), "status": "running",
                      "elapsed_s": round(time.time() - t0, 1)})
-        prog.write_text(json.dumps(data), encoding="utf-8")
+        prog.write_text(json.dumps(data, default=_json_default), encoding="utf-8")
         time.sleep(1.0)
 
 
