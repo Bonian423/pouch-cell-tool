@@ -77,8 +77,6 @@ with common.page_body():
         _GEO_PRESETS = ["— custom —", "top-edge band", "whole-face", "patch"]
         _GEO_KEYS = ["category", "shape", "y0", "z0", "w", "h", "r",
                      "edge", "along_start", "along_end", "depth"]
-        _GEO_INPUT_KEYS = ["shape", "y0", "z0", "w", "h", "r", "edge",
-                           "along_start", "along_end", "depth", "cat"]
         _COOL_METHODS = ["— custom —", "natural", "forced_air",
                          "liquid_cold_plate"]
 
@@ -92,7 +90,31 @@ with common.page_body():
                 reg.pop(_k, None)
             reg.update({_k: _geo.get(_k) for _k in _GEO_KEYS if _k in _geo})
             reg["geo_preset"] = chosen
-            reg["_reset_geo"] = True
+            # Push the applied geometry into the widget state so the fields
+            # refresh immediately (deleting the widget keys is NOT enough --
+            # the frontend keeps showing the old value, same as the h/T bug).
+            # Values are in the widget units (cm for distances).
+            _ss = st.session_state
+            _ss[f"t_cg_{i}_cat"] = (
+                "2D surface patch" if reg.get("category") == "surface"
+                else "Pseudo-1D edge patch")
+            if reg.get("category") == "edge":
+                _ss[f"t_cg_{i}_edge"] = str(reg.get("edge", "top"))
+                _ss[f"t_cg_{i}_astart"] = \
+                    float(reg.get("along_start", 0.0)) * 100.0
+                _ss[f"t_cg_{i}_aend"] = \
+                    float(reg.get("along_end", 0.05)) * 100.0
+                _ss[f"t_cg_{i}_depth"] = \
+                    float(reg.get("depth", 0.005)) * 100.0
+            else:
+                _ss[f"t_cg_{i}_shape"] = str(reg.get("shape", "rect"))
+                _ss[f"t_cg_{i}_y0"] = float(reg.get("y0", 0.05)) * 100.0
+                _ss[f"t_cg_{i}_z0"] = float(reg.get("z0", 0.05)) * 100.0
+                if reg.get("shape") == "ellipse":
+                    _ss[f"t_cg_{i}_r"] = float(reg.get("r", 0.01)) * 100.0
+                else:
+                    _ss[f"t_cg_{i}_w"] = float(reg.get("w", 0.05)) * 100.0
+                    _ss[f"t_cg_{i}_h"] = float(reg.get("h", 0.05)) * 100.0
 
         def _mark_geo_custom(i: int) -> None:
             spec.cooling_regions[i]["geo_preset"] = None
@@ -111,7 +133,12 @@ with common.page_body():
                             "h_patch": 500.0, "T_patch": 288.15})
             else:
                 reg["cool_method"] = None
-            reg["_reset_cool"] = True
+            # Push the applied values straight into the widget state so the
+            # h / T number inputs refresh immediately.  Deleting the widget
+            # keys is NOT enough -- the frontend keeps showing the old value.
+            st.session_state[f"t_cg_{i}_hp"] = float(reg.get("h_patch", 5.0))
+            st.session_state[f"t_cg_{i}_T"] = float(
+                reg.get("T_patch", 288.15))
 
         def _mark_cool_custom(i: int) -> None:
             spec.cooling_regions[i]["cool_method"] = None
@@ -119,18 +146,11 @@ with common.page_body():
         for i, r in enumerate(spec.cooling_regions):
             r.setdefault("geo_preset", None)
             r.setdefault("cool_method", None)
-            # a preset was just applied: clear stale geometry / h-T widget keys
-            # BEFORE those widgets are instantiated this run
-            if r.pop("_reset_geo", False):
-                for _k in _GEO_INPUT_KEYS:
-                    sk = f"t_cg_{i}_{_k}"
-                    if sk in st.session_state:
-                        del st.session_state[sk]
-            if r.pop("_reset_cool", False):
-                for _k in ("hp", "T"):
-                    sk = f"t_cg_{i}_{_k}"
-                    if sk in st.session_state:
-                        del st.session_state[sk]
+            # legacy flags -- presets now push values into the widget state
+            # directly from their callbacks (see _apply_geo_preset and
+            # _apply_cool_method), so the keys can't go stale
+            r.pop("_reset_geo", None)
+            r.pop("_reset_cool", None)
             _cat = region_category(r)
             _cat_label = ("2D surface patch" if _cat == "surface"
                           else "Pseudo-1D edge patch")
@@ -149,7 +169,7 @@ with common.page_body():
                          "dimensions (top-edge band = the old heat pipe). "
                          "Editing the geometry below switches back to custom.",
                 )
-                c0b.selectbox(
+                _cat_sel = c0b.selectbox(
                     "Category",
                     ["2D surface patch", "Pseudo-1D edge patch"],
                     index=0 if _cat == "surface" else 1,
@@ -158,7 +178,11 @@ with common.page_body():
                          "(both faces). Pseudo-1D edge patch = a band along "
                          "one cell edge (perimeter cooling).",
                 )
-                r["category"] = "surface" if _cat == "2D surface patch" else "edge"
+                # NOTE: use the selectbox's *return value* (a display label) for
+                # the assignment, not ``_cat`` (the lowercase category) -- the
+                # old comparison always fell through to "edge", flipping every
+                # surface region to the edge branch and wiping its geometry.
+                r["category"] = "surface" if _cat_sel == "2D surface patch" else "edge"
                 r.pop("target", None)
                 _ck = f"t_cg_{i}_cmethod"
                 if r.get("cool_method") in (None, "— custom —") and _ck in st.session_state:
