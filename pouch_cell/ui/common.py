@@ -490,6 +490,45 @@ def _status_text(data: dict) -> str:
 status_text = _status_text
 
 
+def _protocol_duration_s() -> float:
+    """Total simulated duration (s) of the current protocol after unrolling.
+
+    Used to turn the real solve's per-step ``experiment_time`` into an ETA.
+    """
+    proto = st.session_state.get("protocol")
+    if proto is None:
+        return 0.0
+    try:
+        flat, _ = proto.expand()
+        return sum(float(s.duration_s or 0.0) for s in flat)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _eta_text(data: dict) -> str | None:
+    """A rough '~Xs left' estimate from the real solve's progress.
+
+    progress = simulated time so far / total protocol duration; ETA scales the
+    wall time by the inverse remaining fraction.  Returns ``None`` when there
+    isn't enough to estimate (no experiment time, zero/unknown duration, or
+    already finished).
+    """
+    t = data.get("experiment_time")
+    wall = data.get("elapsed_s")
+    if t is None or wall is None:
+        return None
+    t = float(t)
+    wall = float(wall)
+    total = _protocol_duration_s()
+    if total <= 0 or t <= 0:
+        return None
+    frac = min(t / total, 1.0)
+    if frac >= 0.999:
+        return None
+    eta = wall * (1.0 - frac) / max(frac, 1e-6)
+    return f"~{eta:.0f}s left ({(frac * 100):.0f}%)"
+
+
 @st.fragment(run_every=1.0)
 def _run_panel() -> None:
     """Sidebar Run / Cancel + live status.
@@ -502,7 +541,11 @@ def _run_panel() -> None:
     if st.session_state.run_state == "running":
         data = poll_run()
         st.sidebar.warning("Running…")
-        st.sidebar.caption(_status_text(data))
+        line = _status_text(data)
+        _eta = _eta_text(data)
+        if _eta:
+            line += f" · {_eta}"
+        st.sidebar.caption(line)
         if st.sidebar.button("Cancel", width="stretch"):
             cancel_run()
             st.rerun()
