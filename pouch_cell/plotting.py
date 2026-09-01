@@ -386,8 +386,8 @@ def plot_tab_heating(
     fig, axes = plt.subplots(2, 2, figsize=figsize)
 
     # in-plane current density in each current collector (current concentration)
-    i_pos = _cc_in_plane_current_density(sol, spec, param, "positive")
-    i_neg = _cc_in_plane_current_density(sol, spec, param, "negative")
+    i_pos = _cc_in_plane_current_density(sol, spec, param, "positive", t=t)
+    i_neg = _cc_in_plane_current_density(sol, spec, param, "negative", t=t)
     _panel(
         axes[0, 0], i_pos, "plasma",
         "Positive CC in-plane current density |i| [A.m-2]\n"
@@ -400,8 +400,8 @@ def plot_tab_heating(
     )
 
     # resistive (Ohmic) heating in the current collectors, Q = i^2 / sigma
-    q_pos = _cc_ohmic_heating(sol, spec, param, "positive")
-    q_neg = _cc_ohmic_heating(sol, spec, param, "negative")
+    q_pos = _cc_ohmic_heating(sol, spec, param, "positive", t=t)
+    q_neg = _cc_ohmic_heating(sol, spec, param, "negative", t=t)
     _panel(
         axes[1, 0], q_pos + q_neg, "hot",
         "Current-collector Ohmic (resistive) heating [W.m-3]\n"
@@ -476,28 +476,29 @@ def _cc_conductivity(param, polarity: str) -> float:
     return float(param[f"{polarity.capitalize()} current collector conductivity [S.m-1]"])
 
 
-def _cc_ohmic_heating(sol, spec, param, polarity: str):
+def _cc_ohmic_heating(sol, spec, param, polarity: str, t: float | None = None):
     """Volumetric Ohmic heating in a current collector, Q = i^2 / sigma (W/m^3).
 
     ``i`` is the in-plane current density (A/m^2) in the collector; ``Q =
     i^2/sigma`` is the resistive power density.  This is what concentrates at
     the tabs.
     """
-    i = _cc_in_plane_current_density(sol, spec, param, polarity)
+    i = _cc_in_plane_current_density(sol, spec, param, polarity, t=t)
     sigma = _cc_conductivity(param, polarity)
     return i**2 / sigma
 
 
-def _cc_in_plane_current_density(sol, spec, param, polarity: str):
+def _cc_in_plane_current_density(sol, spec, param, polarity: str,
+                                 t: float | None = None):
     """In-plane current density magnitude in a current collector (A/m^2).
 
     ``|i_cc| = sigma_cc * |grad phi_cc|``, evaluated from the current-collector
-    potential field on the pouch face.  This is the quantity that concentrates
-    near the tabs.
+    potential field on the pouch face at the requested time ``t`` (last frame
+    if ``t`` is None).  This is the quantity that concentrates near the tabs.
     """
     Domain = polarity.capitalize()
     entries = np.asarray(sol[f"{Domain} current collector potential [V]"].entries)
-    tidx = entries.shape[-1] - 1
+    tidx = entries_last_index(sol, t)
     phi = entries[..., tidx]  # (n_y, n_z)
     n_y, n_z = phi.shape
     dy = spec.width / max(n_y - 1, 1)
