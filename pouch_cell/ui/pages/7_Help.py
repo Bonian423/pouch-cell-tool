@@ -17,6 +17,13 @@ with common.page_body():
         "**protocol** (Protocols), then **Run** and review in **Results** / "
         "**History**."
     )
+    st.caption(
+        "**Right panel** (on every page): a live cell schematic — red = tabs, "
+        "blue = cooling area (both surface patches and edge bands), black = "
+        "cell, dashed = dimensions — the **run condition** (model · dim · "
+        "thermal · mesh · parameter set · SOC · solver) and the **changed "
+        "parameters**."
+    )
 
     # ------------------------------------------------------------------ Model & Run
     st.markdown("## 1 · Model & Run")
@@ -52,6 +59,9 @@ with common.page_body():
     - **Electrochemistry overrides** — curated knobs (porosity, particle
       radius, Bruggeman, conductivity, ...) plus a searchable full parameter
       table. Edits go into the solve's `ParameterValues` via `extra_overrides`.
+    - **Save / import custom parameter sets** sits at the **top** of the page:
+      save the current overrides as a named set (picked as the parameter set
+      on Model & Run), or import a saved set back into the editor.
     """
     )
 
@@ -67,9 +77,16 @@ with common.page_body():
         st.markdown(f"  - `{name}` → **{h} W/m²/K**")
     st.markdown(
         """
-    - **Custom cooling geometry** — localised cold-plate patches on the pouch
-      face (rect / ellipse, face or edge) applied in 2+1D `x-lumped` solves.
-      The **top-edge band** preset reproduces the old heat pipe.
+    - **Custom cooling geometry** — localised regions on the pouch face,
+      applied in 2+1D `x-lumped` solves, in two categories:
+      - **2D surface patch** — a rect / ellipse on the large faces (both
+        faces), with a per-patch h and temperature.
+      - **Pseudo-1D edge patch** — a band along one edge (top / bottom /
+        left / right) with an adjustable **along**-length and **band depth**.
+      The **top-edge band** preset reproduces the old heat pipe. In the
+      right-panel illustration both categories are drawn the same blue
+      ("cooling area"); the Thermal editor keeps surface = blue / edge =
+      green so you can tell them apart while editing.
     - **Thermal map preview** runs a quick SPM 2+1D solve to show temperature /
       current-density / Ohmic-heating maps before committing to a full run.
     - **Parameter overrides** — (i) curated knobs → (iii) copy-ready examples →
@@ -91,12 +108,31 @@ with common.page_body():
     Hold at 4.2 V until 0.45 A
     ```
 
-    - **Single discharge** — CC discharge to a duration or cut-off.
-    - **Single charge** — CC-CV charge (optional rest).
+    - **Single discharge / Single charge** — the quick CC / CC-CV presets.
     - **Custom multi-step** — every step ends when **any** of its end
       conditions fires (time / voltage / current / temperature / capacity).
-      Steps can **loop back** to an earlier step (repeat N times, optionally
-      until a condition) and the protocol has a run-level temperature stop.
+      Add steps and set their **Type** in the table:
+      - `discharge` / `charge` — constant current (C-rate, A or W), `hold` —
+        constant voltage, `rest` — zero current.
+      - **`loop`** — a pure control marker: pick an earlier step to **loop
+        back to** and set **×N** (total times the block repeats). The repeated
+        block is the steps between the target and the loop row; loop rows are
+        never solved themselves. Nested and sequential loops are allowed, and
+        repeating the whole protocol is just a loop targeting step 1 (there is
+        no separate cycles box).
+    - **Run conditions** — a universal termination / boundary editor: add
+      multiple conditions, each with its own settings:
+      - **Ambient / experiment temperature** — sets the environment
+        temperature.
+      - **Cell temperature limit** — stops the run at a cell temperature;
+        choose the **source** (volume-averaged or hot-spot). The **Default
+        temperature source** selector appears when a temperature condition is
+        present and also serves per-step temperature conditions.
+      - **Voltage limit / Capacity / Time / Current** — stop the whole run.
+        Voltage / capacity-% / time also stop the solver cleanly; the rest are
+        checked at step ends (post-hoc).
+    - **Save / load protocol** — at the top of the page; persists to
+      `pouch_output/protocols/`.
     - **Thermal maps** — when on, a 2+1D model is auto-selected and per-step
       maps are saved (`step_<cycle>_<step>.png`).
     """
@@ -108,7 +144,11 @@ with common.page_body():
         """
     - **Metrics** — final voltage, delivered capacity, T max / T final.
     - **Per-step table** — for protocols, cycle · step · end time · end
-      voltage · capacity per step.
+      voltage · capacity per step, plus the **wall time spent solving each
+      step** (`solve_s`).
+    - **Run log & timing** — an expander with the stage-by-stage wall-time
+      breakdown (load / build / live preview / solve / post-processing) and a
+      downloadable `log.txt` — useful when a run feels slow.
     - **Figures** — discharge curve, `thermal_maps.png`, per-step maps (with a
       selector), `vt.csv` (V/T time series to download).
     - **Saved runs** can be loaded back here for review without re-running.
