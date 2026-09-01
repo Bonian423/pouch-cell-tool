@@ -26,43 +26,102 @@ PARAMETER_SETS: tuple[str, ...] = (
     "Chayambuka2022",
 )
 
-# Short per-set descriptions / chemistry tags for the Model page.
-PARAMETER_SET_INFO: dict[str, str] = {
-    "Chen2020": "NMC111/graphite — the PyBaMM default; clean, well-tuned full-cell "
-                "dataset used across the docs and most tutorials.",
-    "Marquis2019": "NMC/graphite — a reduced-parameter SPM-targeted set (from the "
-                   "SEI / degradation review paper). Good when you only need SPM.",
-    "Ecker2015": "NMC/graphite Kokam pouch cell — very detailed experimental "
-                 "fit (impedance-derived); a popular alternative to Chen2020.",
-    "Mohtat2020": "NMC/graphite — targeted at cell-level energy/power and "
-                  "lifetime studies with a fast-solving SPM formulation.",
-    "OKane2022": "NMC811/graphite — includes SEI growth + lithium-plating "
-                 "side reactions; ideal for aging-focused runs.",
-    "ORegan2022": "NMC811 + graphite/silicon — closest chemistry match to your "
-                  "NCM 811 design (high-Ni cathode).",
-    "NCA_Kim2011": "NCA/graphite — the classic automotive high-energy dataset.",
-    "Ai2020": "LFP/graphite — lithium iron phosphate; flat voltage plateau, "
-              "fast-charge & thermal studies.",
-    "Prada2013": "LCO/LTO — a commercial 16 Ah cell; good for low-ESR / "
-                 "high-power comparisons.",
-    "Ramadass2004": "LCO/LiC6 (graphite) — a widely-cited early DFN dataset.",
-    "Xu2019": "NMC/Li half-cell inspired full-cell dataset with low-temperature "
-              "extrapolation; good for cold-soak studies.",
-    "Sulzer2019": "NMC/graphite with a focus on energy + degradation balance "
-                  "(used with the degradation models).",
-    "Chen2020_composite": "Composite NMC + graphite electrode (requires the "
-                          "composite model; advanced).",
-    "Ecker2015_graphite_halfcell": "Graphite half-cell from the Ecker dataset "
-                                   "(anode-only; advanced).",
-    "OKane2022_graphite_SiOx_halfcell": "Graphite/SiOx half-cell for SEI & "
-                                        "plating studies (advanced).",
-    "MSMR_Example": "Multi-Species Multi-Reaction example set (requires MSMR "
-                    "model; advanced).",
-    "ECM_Example": "Equivalent-Circuit-Model parameter set (not a physics "
-                   "DFN dataset; for ECM models).",
-    "Chayambuka2022": "Sodium-ion cell parameter set (Na chemistry; not "
-                      "lithium — for comparison runs).",
+# Structured per-set metadata for the parameter-set browser / Help page.
+# ``chemistry`` is a short "cathode/anode" tag, ``kind`` is ``"full-cell"`` or
+# ``"advanced"`` (half-cell / composite / MSMR / ECM / Na-ion).
+PARAMETER_SET_META: dict[str, dict] = {
+    "Chen2020": {"chemistry": "NMC111/graphite", "kind": "full-cell",
+                 "description": "PyBaMM default; clean, well-tuned full-cell "
+                                "dataset used across the docs and tutorials."},
+    "Marquis2019": {"chemistry": "NMC/graphite", "kind": "full-cell",
+                    "description": "Reduced-parameter SPM-targeted set (from "
+                                   "the SEI / degradation review paper)."},
+    "Ecker2015": {"chemistry": "NMC/graphite", "kind": "full-cell",
+                  "description": "Kokam pouch cell, very detailed experimental "
+                                 "fit (impedance-derived); popular Chen2020 "
+                                 "alternative."},
+    "Mohtat2020": {"chemistry": "NMC/graphite", "kind": "full-cell",
+                   "description": "Targeted at cell-level energy/power & "
+                                  "lifetime studies with a fast SPM."},
+    "OKane2022": {"chemistry": "NMC811/graphite", "kind": "full-cell",
+                  "description": "NMC811 + SEI growth + lithium-plating side "
+                                 "reactions; ideal for aging-focused runs."},
+    "ORegan2022": {"chemistry": "NMC811 + graphite/silicon", "kind": "full-cell",
+                   "description": "Closest chemistry match to your NCM 811 "
+                                  "design (high-Ni cathode)."},
+    "NCA_Kim2011": {"chemistry": "NCA/graphite", "kind": "full-cell",
+                    "description": "Classic automotive high-energy dataset."},
+    "Ai2020": {"chemistry": "LFP/graphite", "kind": "full-cell",
+               "description": "Lithium iron phosphate; flat voltage plateau, "
+                              "fast-charge & thermal studies."},
+    "Prada2013": {"chemistry": "LCO/LTO", "kind": "full-cell",
+                  "description": "Commercial 16 Ah cell; good for low-ESR / "
+                                 "high-power comparisons."},
+    "Ramadass2004": {"chemistry": "LCO/LiC6 (graphite)", "kind": "full-cell",
+                     "description": "Widely-cited early DFN dataset."},
+    "Xu2019": {"chemistry": "NMC/Li", "kind": "full-cell",
+               "description": "Half-cell-inspired full-cell dataset with "
+                              "low-temperature extrapolation; good for "
+                              "cold-soak studies."},
+    "Sulzer2019": {"chemistry": "NMC/graphite", "kind": "full-cell",
+                   "description": "Focus on energy + degradation balance "
+                                  "(used with the degradation models)."},
+    "Chen2020_composite": {"chemistry": "composite NMC + graphite",
+                           "kind": "advanced",
+                           "description": "Composite electrode (requires the "
+                                          "composite model)."},
+    "Ecker2015_graphite_halfcell": {"chemistry": "graphite half-cell",
+                                    "kind": "advanced",
+                                    "description": "Anode-only half-cell."},
+    "OKane2022_graphite_SiOx_halfcell": {"chemistry": "graphite/SiOx half-cell",
+                                         "kind": "advanced",
+                                         "description": "Half-cell for SEI & "
+                                                        "plating studies."},
+    "MSMR_Example": {"chemistry": "MSMR", "kind": "advanced",
+                     "description": "Multi-Species Multi-Reaction example "
+                                    "(requires the MSMR model)."},
+    "ECM_Example": {"chemistry": "ECM", "kind": "advanced",
+                    "description": "Equivalent-Circuit-Model set (not a "
+                                   "physics DFN dataset; for ECM models)."},
+    "Chayambuka2022": {"chemistry": "Na-ion", "kind": "advanced",
+                       "description": "Sodium-ion chemistry (not lithium) — "
+                                      "for comparison runs."},
 }
+
+# Backwards-compatible short descriptions (the old info box text).
+PARAMETER_SET_INFO: dict[str, str] = {
+    k: v["description"] for k, v in PARAMETER_SET_META.items()
+}
+
+
+def parameter_set_meta(name: str) -> dict:
+    """Structured metadata for a built-in or user-defined parameter set.
+
+    Custom sets derive their chemistry / kind tag from their base set and use
+    the optional user-saved description (see ``config.io``).
+    """
+    if name in PARAMETER_SET_META:
+        return dict(PARAMETER_SET_META[name])
+    try:
+        from .config.io import is_user_parameter_set, load_user_parameter_set
+
+        if is_user_parameter_set(name):
+            uset = load_user_parameter_set(name)
+            base = uset.get("base", "")
+            base_meta = PARAMETER_SET_META.get(base, {})
+            desc = uset.get("description") or (
+                f"Custom parameter set based on `{base}` — "
+                f"{len(uset.get('overrides') or {})} override(s)."
+            )
+            return {
+                "chemistry": base_meta.get("chemistry", "custom"),
+                "kind": base_meta.get("kind", "custom"),
+                "description": desc,
+            }
+    except Exception:  # noqa: BLE001 - never break the UI for this
+        pass
+    return {"chemistry": "custom", "kind": "custom", "description": ""}
+
 ANALYSES: tuple[str, ...] = ("discharge", "tab")
 SOLVERS: tuple[str, ...] = ("default", "idaklu", "casadi-fast", "casadi-safe")
 

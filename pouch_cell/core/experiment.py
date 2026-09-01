@@ -70,39 +70,178 @@ def collect_metrics(sim: PouchCellSimulation, sol, config: RunConfig) -> dict:
 def collect_step_metrics(sol) -> list[dict]:
     """Per-step metrics for a multi-step solution (cycles -> steps).
 
-    Each row carries the end-of-step time, voltage, discharge capacity and
-    end-of-step temperature (best-effort) so the UI table shows how the
-    electrochemical AND thermal state evolve step by step (the thermal state
-    is inherited exactly across steps -- see the notebook verification).
+    Each row carries the end-of-step time, voltage, discharge capacity, signed
+    current and end-of-step temperature (volume-averaged + hot-spot) so the UI
+    table shows how the electrochemical AND thermal state evolve step by step
+    (the thermal state is inherited exactly across steps) and the post-hoc
+    temperature / loop-until scan can evaluate conditions at step ends.
     """
     rows: list[dict] = []
     cycles = getattr(sol, "cycles", None) or []
+
+    def _end_scalar(step, name: str):
+        try:
+            return float(np.asarray(step[name].entries)[..., -1].max())
+        except (KeyError, TypeError, IndexError):
+            return None
+
     for ci, cycle in enumerate(cycles):
         steps = getattr(cycle, "steps", None) or []
         for si, step in enumerate(steps):
+            row = {"cycle": ci + 1, "step": si + 1, "t_end_s": float("nan"),
+                   "V_end": float("nan"), "Ah": float("nan"),
+                   "I_end_A": float("nan"), "T_end_K": float("nan"),
+                   "T_end_volav_K": float("nan"), "T_end_hotspot_K": float("nan")}
+            if isinstance(step, pybamm.EmptySolution) or step is None:
+                rows.append(row)
+                continue
             try:
-                V = float(np.asarray(step["Voltage [V]"].entries)[-1])
-                Ah = float(np.asarray(step["Discharge capacity [A.h]"].entries)[-1])
-            except KeyError:
-                V = Ah = float("nan")
-            T_end = float("nan")
-            for _tname in (
-                "Volume-averaged cell temperature [K]",
-                "X-averaged cell temperature [K]",
-                "Cell temperature [K]",
-            ):
-                try:
-                    # [..., -1] = end-of-step frame; .max() = hot spot (2+1D)
-                    T_end = float(np.asarray(step[_tname].entries)[..., -1].max())
-                    break
-                except KeyError:
-                    continue
-            rows.append(
-                {"cycle": ci + 1, "step": si + 1,
-                 "t_end_s": float(step.t[-1]), "V_end": V, "Ah": Ah,
-                 "T_end_K": T_end}
-            )
+                tt = np.asarray(step.t)
+                row["t_end_s"] = float(tt[-1]) if len(tt) else float("nan")
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                row["V_end"] = float(np.asarray(step["Voltage [V]"].entries)[-1])
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                row["Ah"] = float(
+                    np.asarray(step["Discharge capacity [A.h]"].entries)[-1]
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            I_end = _end_scalar(step, "Current [A]")
+            if I_end is not None:
+                row["I_end_A"] = I_end
+            T_volav = _end_scalar(step, "Volume-averaged cell temperature [K]")
+            T_hot = _end_scalar(step, "X-averaged cell temperature [K]")
+            if T_hot is None:
+                T_hot = _end_scalar(step, "Cell temperature [K]")
+            if T_volav is not None:
+                row["T_end_volav_K"] = T_volav
+            if T_hot is not None:
+                row["T_end_hotspot_K"] = T_hot
+            if T_volav is not None or T_hot is not None:
+                row["T_end_K"] = T_volav if T_volav is not None else T_hot
+            rows.append(row)
     return rows
+
+
+# --------------------------------------------------------------------------- #
+# Post-hoc temperature / loop-until stop evaluation.
+#
+# PyBaMM 26.8 has no experiment-level temperature termination (its termination
+# strings support only capacity/voltage/time) and cannot branch mid-solve, so
+# a run-level ``temperature_stop`` and any loop ``loop_until`` conditions are
+# evaluated AFTER the solve by scanning the per-step metrics for the first
+# condition to fire, then truncating the reported steps.  The solve itself
+# always runs to completion (compute cost is documented in the UI).
+# --------------------------------------------------------------------------- #
+def _cond_met(c: dict, row: dict, spec: PouchCellSpec, temp_source: str) -> bool:
+    """Evaluate one end-condition dict against a per-step metrics row."""
+    typ = (c or {}).get("type")
+    op = (c or {}).get("operator", ">=")
+    val = float((c or {}).get("value", 0.0))
+    unit = (c or {}).get("unit")
+    if typ == "voltage":
+        v = row.get("V_end")
+        return v is not None and (v <= val if op == "<=" else v >= val)
+    if typ == "current":
+        i = abs(row.get("I_end_A") or 0.0)
+        return i <= val if op == "<=" else i >= val
+    if typ == "temperature":
+        kv = val + 273.15 if unit == "C" else val
+        t = (row.get("T_end_hotspot_K") if temp_source == "hot_spot"
+             else row.get("T_end_volav_K", row.get("T_end_hotspot_K")))
+        if t is None or t != t:  # nan
+            return False
+        return t >= kv if op == ">=" else t <= kv
+    if typ == "capacity":
+        x = val if unit != "%" else val / 100.0 * spec.capacity_Ah
+        ah = row.get("Ah")
+        return ah is not None and (ah >= x if op == ">=" else ah <= x)
+    return False
+
+
+def _posthoc_stop(proto: Protocol, sol, spec: PouchCellSpec,
+                  temp_source: str) -> dict | None:
+    """Return ``{"reason", "cycle", "step", "index", "message"}`` for the first
+    condition to fire (run-level temperature stop + every loop-until), or None.
+    ``index`` is the number of step rows to keep (exclusive end)."""
+    rows = collect_step_metrics(sol)
+    if not rows:
+        return None
+    candidates: list[tuple[int, str]] = []
+    # run-level temperature stop (K)
+    tstop = getattr(proto, "temperature_stop", None)
+    if tstop is not None:
+        for ri, row in enumerate(rows):
+            t = (row.get("T_end_hotspot_K") if temp_source == "hot_spot"
+                 else row.get("T_end_volav_K", row.get("T_end_hotspot_K")))
+            if t is not None and t == t and t >= tstop:
+                candidates.append((ri, "temperature"))
+                break
+    # loop-until conditions at iteration ends
+    flat, infos = proto.expand()
+    for info in infos:
+        until = list(info.get("until") or [])
+        if not until:
+            continue
+        for ri in info.get("iter_ends", []):
+            if ri >= len(rows):
+                continue
+            if any(_cond_met(c, rows[ri], spec, temp_source) for c in until):
+                candidates.append((ri, "loop"))
+                break  # earliest iteration of this loop wins
+    if not candidates:
+        return None
+    ri, reason = min(candidates, key=lambda x: x[0])
+    row = rows[ri]
+    if reason == "temperature":
+        msg = f"temperature limit reached at cycle {row['cycle']} step {row['step']}"
+    else:
+        msg = f"loop exit condition met at cycle {row['cycle']} step {row['step']}"
+    return {"reason": reason, "cycle": row["cycle"], "step": row["step"],
+            "index": ri + 1, "message": msg}
+
+
+def run_protocol(
+    config: RunConfig,
+    spec: PouchCellSpec,
+    proto: Protocol,
+    note: str = "",
+    callbacks: list | None = None,
+):
+    """Run a multi-step :class:`Protocol` and return ``(sim, sol, metrics)``."""
+    model, dim, thermal, mesh = _resolve_protocol_model(config, proto)
+    sim = _build_simulation(spec, config, model, dim, thermal, mesh)
+    experiment = pybamm.Experiment(
+        proto.experiment_cycles(spec.capacity_Ah, proto.temperature_source),
+        period=proto.period,
+        temperature=proto.temperature_K,
+        termination=proto.termination or None,
+    )
+    sol = sim.run_experiment_obj(experiment, callbacks=callbacks)
+    metrics = collect_metrics(sim, sol, config)
+    # report the *actually resolved* model/dim/thermal/mesh (the protocol may
+    # have forced SPM 2+1D x-lumped for thermal maps)
+    metrics["model"] = model
+    metrics["dimensionality"] = dim
+    metrics["thermal"] = thermal
+    metrics["mesh"] = mesh if isinstance(mesh, str) else str(mesh)
+    metrics["analysis"] = "protocol"
+    metrics["protocol_type"] = proto.type
+    metrics["steps"] = collect_step_metrics(sol)
+    # post-hoc temperature / loop-until stop (PyBaMM can't do these at runtime)
+    stop = _posthoc_stop(proto, sol, spec, proto.temperature_source)
+    if stop:
+        metrics["steps"] = metrics["steps"][: stop["index"]]
+        metrics["stopped"] = {k: stop[k]
+                              for k in ("reason", "cycle", "step", "message")}
+    if note:
+        metrics["note"] = note
+    return sim, sol, metrics
+
 
 
 def _build_simulation(spec, config, model_name, dimensionality, thermal, mesh):
@@ -148,38 +287,6 @@ def _resolve_protocol_model(config: RunConfig, proto: Protocol) -> tuple:
         if isinstance(mesh, str) and mesh.endswith("_3d"):
             mesh = "micro_21d"
     return model, dim, thermal, mesh
-
-
-def run_protocol(
-    config: RunConfig,
-    spec: PouchCellSpec,
-    proto: Protocol,
-    note: str = "",
-    callbacks: list | None = None,
-):
-    """Run a multi-step :class:`Protocol` and return ``(sim, sol, metrics)``."""
-    model, dim, thermal, mesh = _resolve_protocol_model(config, proto)
-    sim = _build_simulation(spec, config, model, dim, thermal, mesh)
-    experiment = pybamm.Experiment(
-        proto.experiment_cycles(spec.capacity_Ah),
-        period=proto.period,
-        temperature=proto.temperature_K,
-        termination=proto.termination or None,
-    )
-    sol = sim.run_experiment_obj(experiment, callbacks=callbacks)
-    metrics = collect_metrics(sim, sol, config)
-    # report the *actually resolved* model/dim/thermal/mesh (the protocol may
-    # have forced SPM 2+1D x-lumped for thermal maps)
-    metrics["model"] = model
-    metrics["dimensionality"] = dim
-    metrics["thermal"] = thermal
-    metrics["mesh"] = mesh if isinstance(mesh, str) else str(mesh)
-    metrics["analysis"] = "protocol"
-    metrics["protocol_type"] = proto.type
-    metrics["steps"] = collect_step_metrics(sol)
-    if note:
-        metrics["note"] = note
-    return sim, sol, metrics
 
 
 def run(config: RunConfig, spec: PouchCellSpec | None = None, verbose: bool = True,

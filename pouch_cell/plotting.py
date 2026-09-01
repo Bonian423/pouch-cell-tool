@@ -176,6 +176,37 @@ def _mark_tabs(ax, spec, z_hi_cm):
         )
 
 
+def draw_cooling_regions(ax, spec) -> None:
+    """Overlay the user's 2D cooling geometry as translucent patches.
+
+    Same cm convention as the maps (y = width on x, z = height on y, tabs at
+    the top).  Face patches are drawn blue, edge patches (heat-pipe band)
+    green, both with dashed outlines.
+    """
+    from matplotlib.patches import Ellipse, Rectangle
+
+    regions = list(getattr(spec, "cooling_regions", None) or [])
+    for r in regions:
+        shape = r.get("shape", "rect")
+        target = r.get("target", "face")
+        edgecolor = "#1f77b4" if target == "face" else "#2ca02c"
+        y0 = float(r.get("y0", 0.0)) * 100.0
+        z0 = float(r.get("z0", 0.0)) * 100.0
+        if shape == "ellipse":
+            rad = float(r.get("r", 0.01)) * 100.0
+            ax.add_patch(
+                Ellipse((y0, z0), rad * 2, rad * 2, facecolor=edgecolor,
+                        alpha=0.28, edgecolor=edgecolor, lw=1.2, ls="--")
+            )
+        else:
+            w = float(r.get("w", 0.05)) * 100.0
+            h = float(r.get("h", 0.05)) * 100.0
+            ax.add_patch(
+                Rectangle((y0 - w / 2, z0 - h / 2), w, h, facecolor=edgecolor,
+                          alpha=0.28, edgecolor=edgecolor, lw=1.2, ls="--")
+            )
+
+
 def plot_2d_map(
     sol: pybamm.Solution,
     variable: str = "Current collector current density [A.m-2]",
@@ -230,6 +261,8 @@ def plot_2d_map(
         plt.colorbar(im, ax=ax, shrink=0.85)
         if show_tabs and spec is not None:
             _mark_tabs(ax, spec, z_hi * 100)
+        if spec is not None:
+            draw_cooling_regions(ax, spec)
         return ax
 
     # 1D current collector (dimensionality 1): line along z
@@ -273,11 +306,11 @@ def plot_current_density_map(
 
 
 def plot_temperature_map(
-    sol: pybamm.Solution, t: float | None = None, ax=None
+    sol: pybamm.Solution, t: float | None = None, ax=None, spec=None
 ):
     """Heat-map of the (x-lumped) cell temperature on the pouch face."""
     return plot_2d_map(
-        sol, "X-averaged cell temperature [K]", t=t, ax=ax,
+        sol, "X-averaged cell temperature [K]", t=t, ax=ax, spec=spec,
         title="X-averaged cell temperature [K]", cmap="inferno",
     )
 
@@ -328,6 +361,7 @@ def plot_tab_heating(
         ax.set_title(title, fontsize=10)
         plt.colorbar(im, ax=ax, shrink=0.8)
         _mark_tabs(ax, spec, z_hi * 100)
+        draw_cooling_regions(ax, spec)
 
     fig, axes = plt.subplots(2, 2, figsize=figsize)
 
@@ -378,6 +412,43 @@ def entries_last_index(sol: pybamm.Solution, t: float | None) -> int:
     if t is None:
         return times.size - 1
     return int(np.argmin(np.abs(times - t)))
+
+
+# --------------------------------------------------------------------------- #
+# Persistent-panel schematic (plan view of the pouch face)
+# --------------------------------------------------------------------------- #
+def plot_cell_schematic(spec: PouchCellSpec, figsize=(4.4, 4.6)) -> plt.Figure:
+    """Plan-view schematic of the pouch face for the persistent right panel.
+
+    Drawn with the same conventions as the thermal maps: y = width on x,
+    z = height on y (cm), tabs at the top edge, cooling-region overlays, and
+    dimension call-outs.  A fixed figure height keeps the panel stable
+    regardless of the cell aspect ratio.
+    """
+    from matplotlib.patches import Rectangle
+
+    fig, ax = plt.subplots(figsize=figsize)
+    w_cm = float(spec.width) * 100.0
+    h_cm = float(spec.height) * 100.0
+    ax.add_patch(Rectangle((0, 0), w_cm, h_cm, facecolor="#eef2f7",
+                           edgecolor="black", lw=1.5))
+    draw_cooling_regions(ax, spec)
+    _mark_tabs(ax, spec, h_cm)
+    # dimension call-outs
+    ax.annotate("", xy=(w_cm, -0.05 * h_cm), xytext=(0.0, -0.05 * h_cm),
+                arrowprops=dict(arrowstyle="<->", color="0.35", lw=1))
+    ax.text(w_cm / 2.0, -0.09 * h_cm, f"width = {w_cm:.0f} cm",
+            ha="center", va="top", fontsize=9)
+    ax.annotate("", xy=(-0.06 * w_cm, h_cm), xytext=(-0.06 * w_cm, 0.0),
+                arrowprops=dict(arrowstyle="<->", color="0.35", lw=1))
+    ax.text(-0.10 * w_cm, h_cm / 2.0, f"height = {h_cm:.0f} cm",
+            ha="center", va="center", fontsize=9, rotation=90)
+    ax.set_xlim(-0.3 * w_cm, 1.12 * w_cm)
+    ax.set_ylim(-0.24 * h_cm, 1.06 * h_cm)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
 
 
 def _cc_conductivity(param, polarity: str) -> float:

@@ -23,7 +23,7 @@ parallel stack.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 
 # Design constants ------------------------------------------------------------
 COPPER = "Cu"
@@ -83,20 +83,43 @@ class PouchCellSpec:
     lower_cutoff_V: float = 2.5
     upper_cutoff_V: float = 4.2
 
-    # --- heat-pipe cooling (optional; applied in 2+1D x-lumped solves) -----
-    # A copper heat pipe runs ACROSS THE FULL WIDTH of the cell (along y),
-    # right below the top edge (z = height) -- a horizontal band of height
-    # heat_pipe_height -- so it sits beside both tabs.  The folded tabs +
-    # thermal paste + pipe are lumped into an effective coefficient
-    # heat_pipe_h rejecting to heat_pipe_temperature_K.
-    heat_pipe_enabled: bool = False
-    heat_pipe_height: float = 0.005          # pipe band height below the top edge (0.5 cm)
-    heat_pipe_h: float = 2000.0             # effective cell/tab -> pipe coeff (W/m^2/K)
-    heat_pipe_temperature_K: float = 288.15  # actively chilled pipe temperature
+    # --- user-defined 2D cooling geometry (2+1D x-lumped only) --------------
+    # list of region dicts {shape: rect|ellipse, target: face|edge, y0, z0,
+    # w, h, r, h_patch, T_patch} -- see pouch_cell.thermal.cooling_geometry.
+    # Replaces the old standalone heat pipe (auto-migrated to a "top-edge
+    # band" region on load).
+    cooling_regions: list = field(default_factory=list)
 
     # ------------------------------------------------------------------ #
     # Derived geometry
     # ------------------------------------------------------------------ #
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "PouchCellSpec":
+        """Build a spec from a dict, migrating the legacy standalone heat pipe
+        (``heat_pipe_enabled=True``) into a ``cooling_regions`` entry."""
+        if not data:
+            return cls()
+        data = dict(data)
+        regions = [dict(r) for r in (data.pop("cooling_regions", None) or [])]
+        if data.pop("heat_pipe_enabled", False):
+            try:
+                w = float(data.get("width", 0.1))
+                h = float(data.get("height", 0.15))
+                band = 0.005
+                regions.insert(0, {
+                    "shape": "rect", "target": "edge",
+                    "y0": w / 2.0, "z0": h - band / 2.0, "w": w, "h": band,
+                    "h_patch": float(data.get("heat_pipe_h", 2000.0)),
+                    "T_patch": float(data.get("heat_pipe_temperature_K", 288.15)),
+                })
+            except Exception:  # noqa: BLE001 - migration is best-effort
+                pass
+        for _k in ("heat_pipe_height", "heat_pipe_h", "heat_pipe_temperature_K"):
+            data.pop(_k, None)
+        data["cooling_regions"] = regions
+        valid = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in valid})
+
     @property
     def footprint_area(self) -> float:
         """Footprint area of one layer (m^2)."""
@@ -231,12 +254,11 @@ class PouchCellSpec:
                 ]
             except KeyError as err:  # pragma: no cover - depends on the parameter set
                 lines.append(f"  (capacity check skipped: missing {err})")
-        if self.heat_pipe_enabled:
+        regions = list(getattr(self, "cooling_regions", None) or [])
+        if regions:
             lines.append(
-                f"  Heat pipe cooling: full-width band "
-                f"{self.heat_pipe_height * 1e2:.1f} cm tall right below the top edge "
-                f"| h = {self.heat_pipe_h:.0f} W/m^2/K "
-                f"@ {self.heat_pipe_temperature_K - 273.15:.0f} C"
+                f"  Cooling geometry : {len(regions)} region(s) "
+                f"({', '.join(r.get('shape', 'rect') for r in regions)})"
             )
         return "\n".join(lines)
 

@@ -15,7 +15,7 @@ import pybamm
 from ..config.design import PouchCellSpec
 from ..registry import MESH_PRESETS
 from ..thermal.cooling import resolve_cooling
-from ..thermal.heat_pipe import heat_pipe_overrides
+from ..thermal.cooling_geometry import region_overrides
 from .model import build_geometry_3d_stack, build_model
 from .parameters import build_parameter_values
 from .sizing import size_electrodes_to_capacity
@@ -159,19 +159,9 @@ class PouchCellSimulation:
         self.cooling = cooling
 
         # --- optional localized heat-pipe cooling (2+1D x-lumped only) -----
-        if (self.spec.heat_pipe_enabled
-                and dimensionality == 2 and thermal == "x-lumped"):
-            try:
-                h_base = float(
-                    self.param["Edge heat transfer coefficient [W.m-2.K-1]"]
-                )
-            except (TypeError, ValueError):
-                h_base = 5.0
-            try:
-                T_base = float(self.param["Ambient temperature [K]"])
-            except (TypeError, ValueError):
-                T_base = self.spec.ambient_temperature_K
-            self.param.update(heat_pipe_overrides(self.spec, h_base, T_base))
+        # NOTE: replaced by user-defined cooling regions (cooling_geometry.py),
+        # applied AFTER the initial state below so they win over the uniform
+        # cooling / set_initial_state.
         if initial_voltage is not None:
             # start the cell at a target open-circuit voltage (PyBaMM
             # interprets "3.9 V" as a voltage, 0-1 as a SOC)
@@ -185,6 +175,20 @@ class PouchCellSimulation:
         # concentration-type override back to the SOC-1.0 values)
         if extra_cool:
             self.param.update(extra_cool)
+        # --- user-defined 2D cooling geometry (2+1D x-lumped only) ---------
+        regions = list(getattr(self.spec, "cooling_regions", None) or [])
+        if regions and dimensionality == 2 and thermal == "x-lumped":
+            try:
+                h_base = float(self.param[
+                    "Negative current collector surface heat transfer "
+                    "coefficient [W.m-2.K-1]"])
+            except (TypeError, ValueError, KeyError):
+                h_base = 5.0
+            try:
+                T_base = float(self.param["Ambient temperature [K]"])
+            except (TypeError, ValueError):
+                T_base = self.spec.ambient_temperature_K
+            self.param.update(region_overrides(self.spec, regions, h_base, T_base))
 
         # --- model -----------------------------------------------------------
         self.model = build_model(
@@ -354,6 +358,19 @@ class PouchCellSimulation:
             full_stack_3d=full_stack_3d,
             **model_options,
         )
+
+    @classmethod
+    def run_study(
+        cls,
+        jobs,
+        nproc: int | None = None,
+        trace_points: int = 0,
+    ):
+        """Run a list of independent study jobs in parallel -- see
+        :func:`pouch_cell.core.study.run_study` for details."""
+        from .study import run_study as _run
+
+        return _run(jobs, nproc=nproc, trace_points=trace_points)
 
     @classmethod
     def tab_heating_analysis(

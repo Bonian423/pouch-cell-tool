@@ -15,6 +15,17 @@ from ..config.design import PouchCellSpec
 from ..config.protocol import Protocol
 from ..config.run import RunConfig
 from ..config.thermal import ThermalConfig
+from ..core.constraints import (
+    Violation,
+    constraint_violations,
+    is_full_cell_parameter_set,
+    mesh_default,
+    normalise_config,
+    resolve_effective,
+    sanity_check_output_variables,
+    viable_mesh,
+    viable_thermal,
+)
 
 _WORKER_MODULE = "pouch_cell.ui.worker"
 HISTORY_FILE = preset_io.PROJECT_ROOT / "pouch_output" / "history.jsonl"
@@ -32,40 +43,9 @@ _DESIGN_KEYS = (
 # --------------------------------------------------------------------------- #
 # Session state
 # --------------------------------------------------------------------------- #
-# Viable model/thermal/mesh combinations (so only working combos can be picked).
-def viable_thermal(dim: int) -> list[str]:
-    """Thermal submodels that are valid for a given dimensionality."""
-    if dim == 0:
-        return ["isothermal", "lumped", "x-full"]
-    return ["isothermal", "lumped", "x-lumped"]
-
-
-def viable_mesh(model_name: str) -> list[str]:
-    """Mesh presets that work with a model (true-3D FEM vs 2+1D)."""
-    return registry.options("mesh_3d" if model_name == "SPM_3D" else "mesh_21d")
-
-
-def normalise_config(cfg) -> list[str]:
-    """Force a viable (model, thermal, mesh, particle) combination in place.
-
-    Returns the names of the fields that were corrected.  Call this before
-    rendering dependent widgets so a widget's stored value is always a valid
-    option (and the underlying config never holds a broken combination).
-    """
-    fixed: list[str] = []
-    th = viable_thermal(cfg.dimensionality)
-    if cfg.thermal not in th:
-        cfg.thermal = "lumped"
-        fixed.append("thermal")
-    meshes = viable_mesh(cfg.model_name)
-    if cfg.mesh not in meshes:
-        cfg.mesh = meshes[0]
-        fixed.append("mesh")
-    # r=1 meshes (micro/coarse 2+1D) require uniform-profile particles
-    if cfg.mesh in ("micro_21d", "coarse_21d") and cfg.particle != "uniform profile":
-        cfg.particle = "uniform profile"
-        fixed.append("particle")
-    return fixed
+# Guard rules live in pouch_cell/core/constraints.py (single source of truth).
+# viable_thermal / viable_mesh / normalise_config / mesh_default are re-exported
+# from there (imported above) so page code can keep using common.*.
 
 
 def _default_config() -> RunConfig:
@@ -113,12 +93,14 @@ def init_state() -> None:
     saved = _load_ui_state()
     if "spec" not in st.session_state:
         spec = saved.get("spec")
-        st.session_state.spec = PouchCellSpec(**spec) if spec else PouchCellSpec()
+        st.session_state.spec = (PouchCellSpec.from_dict(spec) if spec
+                                 else PouchCellSpec())
     if "config" not in st.session_state:
         cfg = saved.get("config")
         if cfg:
             try:
                 st.session_state.config = RunConfig(**cfg)
+                normalise_config(st.session_state.config)
             except Exception:  # noqa: BLE001 - stale state -> defaults
                 st.session_state.config = _default_config()
         else:
@@ -155,7 +137,25 @@ def init_state() -> None:
 
 
 def apply_config(cfg: RunConfig) -> None:
-    """Load a :class:`RunConfig` (e.g. from a preset) into the session."""
+    """Load a :class:`RunConfig` (e.g. from a preset) into the session.
+
+    Structurally-broken presets (unknown model / parameter set, out-of-range
+    values) are rejected with an error; stale-but-fixable combinations are
+    auto-corrected and reported in the Compatibility panel.
+    """
+    from ..core.constraints import validate_structural
+
+    try:
+        validate_structural(cfg)
+    except ValueError as err:
+        st.session_state["preset_error"] = str(err)
+        return
+    fixed = normalise_config(cfg)
+    if fixed:
+        note_corrections(
+            [f"auto-corrected {f} → {getattr(cfg, f)}" for f in fixed]
+        )
+    st.session_state.pop("preset_error", None)
     st.session_state.config = cfg
     st.session_state.spec = cfg.spec()
     st.session_state.thermal = ThermalConfig(cooling=cfg.cooling)
@@ -170,10 +170,130 @@ def apply_config(cfg: RunConfig) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Guard helpers (single source of truth: core/constraints.py)
+# --------------------------------------------------------------------------- #
+def note_corrections(messages: list[str]) -> None:
+    """Record auto-corrections (deduped, newest first, capped) for the panel."""
+    if not messages:
+        return
+    corr = st.session_state.setdefault("corrections", [])
+    for m in messages:
+        if m not in corr:
+            corr.insert(0, m)
+    del corr[6:]
+
+
+def sync_mesh(cfg, widget_key: str | None = None) -> list[str]:
+    """Keep ``cfg.mesh`` a valid option for ``cfg.model_name``.
+
+    Remembers the mesh used per model family (true-3D vs 2+1D) so switching
+    ``SPM_3D`` <-> other restores the last-used mesh of that family instead of
+    always resetting to the default.  If ``widget_key`` is given it is written
+    before instantiation (the Streamlit write-before-instantiate pattern).
+    """
+    s = st.session_state
+    meshes = viable_mesh(cfg.model_name)
+    fam = "3d" if cfg.model_name == "SPM_3D" else "21d"
+    mem = s.setdefault("mesh_memory", {})
+    if cfg.mesh not in meshes:
+        remembered = mem.get(fam)
+        cfg.mesh = remembered if remembered in meshes else mesh_default(cfg.model_name)
+        if widget_key is not None:
+            s[widget_key] = cfg.mesh
+        note_corrections([f"auto-corrected mesh → {cfg.mesh}"])
+    mem[fam] = cfg.mesh
+    return meshes
+
+
+def _compat() -> dict:
+    """Current constraint state: blocked / warnings / infos / corrections."""
+    cfg = st.session_state.config
+    vios = constraint_violations(
+        cfg,
+        protocol=st.session_state.get("protocol"),
+        spec=st.session_state.get("spec"),
+        cooling=getattr(st.session_state.get("thermal"), "cooling", None),
+    )
+    return {
+        "blocked": [v for v in vios if v.kind == "blocked"],
+        "warnings": [v for v in vios if v.kind == "warning"],
+        "infos": [v for v in vios if v.kind == "info"],
+        "corrections": list(st.session_state.get("corrections", [])),
+    }
+
+
+def hard_blocked() -> list[Violation]:
+    """Violations that must be fixed before a run can start."""
+    return _compat()["blocked"]
+
+
+def _compat_panel() -> None:
+    """Sidebar compatibility panel (only when there is something to say)."""
+    comp = _compat()
+    preset_error = st.session_state.get("preset_error")
+    if not (comp["blocked"] or comp["warnings"] or comp["infos"]
+            or comp["corrections"] or preset_error):
+        return
+    with st.sidebar.expander("Compatibility", expanded=bool(comp["blocked"])):
+        if preset_error:
+            st.error(f"Preset not loaded: {preset_error}")
+        for c in comp["corrections"]:
+            st.caption(f"↻ {c}")
+        for v in comp["infos"]:
+            st.info(v.message)
+        for v in comp["warnings"]:
+            st.warning(v.message)
+        for v in comp["blocked"]:
+            st.error(v.message)
+
+
+def effective_readout(cfg, proto=None) -> str:
+    """One-line 'what will actually run' readout (thermal maps may override)."""
+    proto = proto or st.session_state.get("protocol")
+    eff = resolve_effective(cfg, proto)
+    overridden = (
+        eff["model"] != cfg.model_name
+        or eff["dimensionality"] != cfg.dimensionality
+        or eff["thermal"] != cfg.thermal
+        or eff["mesh"] != cfg.mesh
+    )
+    base = (f"Will run as **{eff['model']}** · dim {eff['dimensionality']} · "
+            f"**{eff['thermal']}** · mesh `{eff['mesh']}`")
+    return base + (" — thermal maps override your selections." if overridden else ".")
+
+
+def check_variable_names(names: list[str]) -> list[str]:
+    """Strict, on-demand check: return names missing from a quick SPM model."""
+    try:
+        import pybamm
+
+        model = pybamm.lithium_ion.SPM()
+        param = pybamm.ParameterValues(model.default_parameter_values)
+        sim = pybamm.Simulation(model, parameter_values=param)
+        sim.build()  # ~1 s; exposes model.variables with their exact names
+        known = set(sim.model.variables)
+    except Exception:  # noqa: BLE001
+        return ["(could not build a reference SPM model — check names at run time)"]
+    return [n for n in (names or []) if n not in known]
+
+
+# --------------------------------------------------------------------------- #
 # Run orchestration (subprocess worker)
 # --------------------------------------------------------------------------- #
 def launch_run() -> None:
-    """Write the payload and start the worker subprocess (non-blocking)."""
+    """Write the payload and start the worker subprocess (non-blocking).
+
+    Hard-blocked combinations (invalid output variables, degenerate initial
+    state, broken presets) are rejected here rather than spawning a worker
+    that would immediately fail; guard warnings + auto-corrections are carried
+    into the run record for reproducibility.
+    """
+    comp = _compat()
+    if comp["blocked"]:
+        st.session_state["launch_blocked"] = [v.message for v in comp["blocked"]]
+        return
+    st.session_state.pop("launch_blocked", None)
+
     spec = st.session_state.spec
     cfg = st.session_state.config
     thermal = st.session_state.thermal
@@ -186,9 +306,14 @@ def launch_run() -> None:
     run_dir = runs_root / f"run_{int(time.time())}"
     run_dir.mkdir(parents=True, exist_ok=True)
     payload_path = run_dir / "payload.json"
+    warnings = [v.message for v in comp["warnings"]] + comp["corrections"]
     payload_path.write_text(
         json.dumps(
-            {"spec": spec.as_dict(), "config": cfg.as_dict()},
+            {
+                "spec": spec.as_dict(),
+                "config": cfg.as_dict(),
+                "warnings": warnings,
+            },
             default=str,
         ),
         encoding="utf-8",
@@ -313,11 +438,14 @@ def _quick_knobs() -> None:
     if intended_model not in models:
         intended_model = models[0]
     cfg.model_name = intended_model
-    meshes = viable_mesh(cfg.model_name)
-    if cfg.mesh not in meshes:
-        # safe: sb_mesh is not instantiated yet on this run
-        st.session_state["sb_mesh"] = meshes[0]
-        cfg.mesh = meshes[0]
+    meshes = sync_mesh(cfg, "sb_mesh")
+    fixed = normalise_config(cfg)
+    if "mesh" in fixed:
+        st.session_state["sb_mesh"] = cfg.mesh
+    if fixed:
+        note_corrections(
+            [f"auto-corrected {f} → {getattr(cfg, f)}" for f in fixed]
+        )
     cfg.model_name = st.selectbox(
         "Model", models, index=models.index(cfg.model_name), key="sb_model"
     )
@@ -379,7 +507,12 @@ def _run_panel() -> None:
         if st.session_state.run_state == "idle":
             st.rerun()  # finished -> refresh so the current page shows results
     else:
-        if st.sidebar.button("Run", type="primary", width="stretch"):
+        blocked = _compat()["blocked"]
+        if blocked:
+            st.sidebar.error("Run is blocked — fix the items in **Compatibility**.")
+        if st.sidebar.button(
+            "Run", type="primary", width="stretch", disabled=bool(blocked)
+        ):
             launch_run()
             st.rerun()
         last = st.session_state.last_result
@@ -392,6 +525,15 @@ def _run_panel() -> None:
                     f"{last.get('delivered_Ah', float('nan')):.2f} Ah · "
                     f"Tmax={last.get('Tmax_K', float('nan')):.1f} K"
                 )
+                eff = last.get("effective_config")
+                warns = last.get("warnings") or []
+                if eff:
+                    st.sidebar.caption(
+                        f"ran as {eff.get('model')} · dim "
+                        f"{eff.get('dimensionality')} · {eff.get('thermal')} · "
+                        f"mesh `{eff.get('mesh')}`"
+                        + (f" · {len(warns)} warning(s)" if warns else "")
+                    )
 
 
 def _presets() -> None:
@@ -424,6 +566,7 @@ def render_sidebar() -> None:
     _presets()
 
     st.sidebar.divider()
+    _compat_panel()
     _run_panel()  # Run/Cancel + live status (fragment, updates every second)
     save_state()  # persist whatever the user just tweaked
 
@@ -439,3 +582,177 @@ def summary_markdown() -> str:
         f"`{cfg.mesh}`\n\n"
         f"{spec.report()}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Persistent right-side panel (replaces the Overview tab)
+# --------------------------------------------------------------------------- #
+_SETTING_LABELS = {
+    # run config
+    "model_name": "Model", "dimensionality": "Dim", "thermal": "Thermal",
+    "mesh": "Mesh", "parameter_set": "Parameter set", "solver": "Solver",
+    "analysis": "Analysis", "initial_soc": "Initial SOC",
+    "initial_voltage": "Initial voltage", "C_rate": "C-rate",
+    "duration_s": "Duration (s)", "size_to_capacity": "Auto-size",
+    "particle": "Particle", "full_stack_3d": "Full-stack 3D",
+    "store_first_last": "Store first/last", "output_variables": "Output vars",
+    # spec
+    "height": "Height (z)", "width": "Width (y)",
+    "thickness_total": "Thickness", "n_stacks": "Stacks",
+    "capacity_Ah": "Capacity (Ah)", "n_series": "Series cells",
+    "tab_width": "Tab width", "neg_tab_y_centre": "Neg tab y",
+    "pos_tab_y_centre": "Pos tab y", "ambient_temperature_K": "Ambient T (K)",
+    "lower_cutoff_V": "Lower cut-off", "upper_cutoff_V": "Upper cut-off",
+    "cooling_regions": "Cooling regions",
+    "L_cn": "L_cn (Cu)", "L_n": "L_n (neg)", "L_s": "L_s (sep)",
+    "L_p": "L_p (pos)", "L_cp": "L_cp (Al)",
+    "negative_electrode": "Negative electrode",
+    "positive_electrode": "Positive electrode",
+    # thermal
+    "cooling": "Cooling", "heat_transfer_coefficient_W_m2K": "h override",
+    "per_face_h": "Per-face h", "extra_overrides": "Raw overrides",
+    # protocol
+    "type": "Protocol type", "cycles": "Cycles", "period": "Period",
+    "termination": "Termination", "temperature_K": "Experiment T (K)",
+    "thermal_maps": "Thermal maps", "step_map_mode": "Map mode",
+    "temperature_stop": "Temp stop", "temperature_source": "Temp source",
+}
+
+
+def _fmt_setting(key: str, value) -> str:
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, float):
+        if key.startswith("L_"):  # layer thickness in metres -> µm
+            return f"{value * 1e6:.1f} µm"
+        if key in ("initial_soc",):
+            return f"{value:.2f}"
+        return f"{value:g}"
+    if isinstance(value, (list, dict)):
+        return f"{len(value)} × {key.replace('_', ' ')}"
+    return str(value)
+
+
+def diff_settings(spec, cfg, thermal, proto) -> list[tuple[str, str]]:
+    """Key settings that differ from the fresh-install defaults.
+
+    Compares the live session dataclasses (so sidebar quick-knob changes are
+    caught too) and returns ``(label, value)`` pairs for display.
+    """
+    default_cfg = _default_config()
+    default_spec = PouchCellSpec()
+    default_th = ThermalConfig()
+    default_proto = Protocol.discharge_protocol()
+    rows: list[tuple[str, str]] = []
+
+    def _add(field: str, cur, default, label_map):
+        if cur == default:
+            return
+        rows.append((label_map.get(field, field.replace("_", " ").title()),
+                     _fmt_setting(field, cur)))
+
+    from dataclasses import fields as _dfields
+
+    for f in sorted(_dfields(RunConfig), key=lambda x: x.name):
+        if f.name == "design":
+            continue
+        _add(f.name, getattr(cfg, f.name), getattr(default_cfg, f.name),
+             _SETTING_LABELS)
+    for f in sorted(_dfields(PouchCellSpec), key=lambda x: x.name):
+        _add(f.name, getattr(spec, f.name), getattr(default_spec, f.name),
+             _SETTING_LABELS)
+    for f in ("cooling", "ambient_temperature_K",
+              "heat_transfer_coefficient_W_m2K"):
+        _add(f, getattr(thermal, f), getattr(default_th, f), _SETTING_LABELS)
+    if thermal.per_face_h:
+        rows.append(("Per-face h", f"{len(thermal.per_face_h)} face(s)"))
+    if thermal.extra_overrides:
+        rows.append(("Raw overrides", f"{len(thermal.extra_overrides)} key(s)"))
+    for f in ("type", "cycles", "period", "termination", "temperature_K",
+              "thermal_maps", "step_map_mode", "temperature_stop",
+              "temperature_source"):
+        _add(f, getattr(proto, f), getattr(default_proto, f), _SETTING_LABELS)
+    if len(proto.steps) != len(default_proto.steps):
+        rows.append(("Steps", f"{len(proto.steps)}"))
+    n_ov = len(cfg.extra_overrides or {})
+    if n_ov:
+        rows.append(("Electrochem overrides", f"{n_ov} key(s)"))
+    # de-dup keys that may appear from both spec + cfg
+    seen: set = set()
+    out: list[tuple[str, str]] = []
+    for k, v in rows:
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append((k, v))
+    return out
+
+
+def render_persistent_panel() -> None:
+    """Render the persistent right-side panel (replaces the Overview tab).
+
+    A live cell schematic (with dimensions) on top, then the user-changed
+    parameters.  Always reflects the CURRENT session config.  Call inside the
+    right column of ``page_body()``.
+    """
+    spec = st.session_state.spec
+    cfg = st.session_state.config
+    thermal = st.session_state.get("thermal") or ThermalConfig()
+    proto = st.session_state.get("protocol") or Protocol.discharge_protocol()
+
+    try:
+        import matplotlib.pyplot as plt
+
+        from .. import plotting
+
+        fig = plotting.plot_cell_schematic(spec)
+        st.pyplot(fig, width="stretch")
+        plt.close(fig)
+    except Exception:  # noqa: BLE001 - schematic is best-effort
+        st.caption("(schematic unavailable)")
+    st.caption(
+        f"**{spec.n_stacks} × {spec.height * 100:.0f} × {spec.width * 100:.0f} cm**  \n"
+        f"thickness {spec.thickness_total * 1e3:.0f} mm · **{spec.capacity_Ah:.1f} Ah**"
+    )
+
+    st.divider()
+    st.markdown("**Changed parameters**")
+    rows = diff_settings(spec, cfg, thermal, proto)
+    if not rows:
+        st.caption("All defaults — nothing changed.")
+    else:
+        for label, value in rows:
+            st.markdown(f"- **{label}:** {value}")
+
+    st.divider()
+    eff = resolve_effective(cfg, proto)
+    st.markdown(
+        f"**Run:** `{eff['model']}` · dim {eff['dimensionality']} · "
+        f"`{eff['thermal']}` · `{eff['mesh']}`"
+    )
+    stopped = (st.session_state.get("last_result") or {}).get("stopped")
+    if stopped:
+        st.caption(f"Last run stopped: {stopped.get('message', '')}")
+
+
+def page_setup() -> None:
+    """Call at the very top of every page: state + sidebar.
+
+    ``st.set_page_config`` is set ONCE in the entrypoint router
+    (``ui/Overview.py``) — Streamlit forbids calling it more than once, so
+    pages must not call it.
+    """
+    init_state()
+    render_sidebar()
+
+
+def page_body():
+    """Open the ``[main | persistent panel]`` layout and render the panel.
+
+    Pages wrap their body in ``with page_body():``; the returned value is the
+    left (main) column so subsequent widgets land to the left of the panel.
+    """
+    left, right = st.columns([3.4, 1], gap="medium")
+    with right:
+        render_persistent_panel()
+    return left

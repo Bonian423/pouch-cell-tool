@@ -80,14 +80,20 @@ def list_user_parameter_sets() -> list[str]:
     return sorted(p.stem for p in USER_PARAM_DIR.glob("*.json"))
 
 
-def save_user_parameter_set(name: str, base_set: str, overrides: dict) -> Path:
-    """Write a custom parameter set ``{base, overrides}`` and return its path."""
+def save_user_parameter_set(
+    name: str, base_set: str, overrides: dict, description: str | None = None
+) -> Path:
+    """Write a custom parameter set ``{base, overrides}`` and return its path.
+
+    ``description`` is an optional user note shown in the parameter-set
+    browser on the Model page.
+    """
     USER_PARAM_DIR.mkdir(parents=True, exist_ok=True)
     path = user_param_path(name)
-    path.write_text(
-        json.dumps({"base": base_set, "overrides": overrides or {}}, indent=2),
-        encoding="utf-8",
-    )
+    data: dict = {"base": base_set, "overrides": overrides or {}}
+    if description and str(description).strip():
+        data["description"] = str(description).strip()
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
 
 

@@ -98,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tab-analysis", action="store_true",
                    help="run the tab-driven resistive-heating analysis "
                         "(2+1D, x-lumped thermal) instead of a plain discharge")
+    p.add_argument("--study", default=None, metavar="FILE",
+                   help="run a parallel study from a JSON file of jobs "
+                        "[{\"config\": {...}, \"spec\": {...}, \"label\": ...}]")
+    p.add_argument("--nproc", type=int, default=None,
+                   help="worker processes for --study (default: CPU count)")
     return p
 
 
@@ -110,6 +115,22 @@ def main(argv=None) -> int:
         app = Path(__file__).resolve().parent / "ui" / "Overview.py"
         print(f"Launching Streamlit UI: {app}")
         return subprocess.call([sys.executable, "-m", "streamlit", "run", str(app)])
+
+    # --- parallel study: a JSON file of independent jobs -------------------
+    if args.study:
+        import json
+        from pathlib import Path
+
+        from .core.study import results_table, run_study
+
+        jobs = json.loads(Path(args.study).read_text(encoding="utf-8"))
+        print(f"Running study: {len(jobs)} job(s) across "
+              f"{args.nproc or 'all'} process(es)...")
+        results = run_study(jobs, nproc=args.nproc)
+        import pprint
+
+        pprint.pprint(results_table(results))
+        return 0
 
     # --- load the config: preset / JSON file / defaults + flags ----------
     if args.preset:
@@ -140,11 +161,18 @@ def main(argv=None) -> int:
         cfg.analysis = "tab"
     spec = cfg.spec()
     if args.heat_pipe:
-        spec.heat_pipe_enabled = True
+        # the old standalone heat pipe is now the "top-edge band" cooling region
+        from .thermal.cooling_geometry import preset_regions
 
-    # a 0D model cannot use the x-lumped thermal submodel; fall back to lumped
-    if cfg.dimensionality == 0 and cfg.thermal == "x-lumped":
-        cfg.thermal = "lumped"
+        spec.cooling_regions = preset_regions("heat pipe", spec)
+
+    # auto-correct stale combos (thermal vs dimensionality, mesh vs model,
+    # particle vs r=1 meshes) through the shared constraint rules
+    from .core.constraints import normalise_config
+
+    fixed = normalise_config(cfg)
+    if fixed:
+        print("NOTE: auto-corrected " + ", ".join(fixed) + ".")
 
     if args.save_preset:
         cfg.design = spec.as_dict()

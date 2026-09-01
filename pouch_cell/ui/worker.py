@@ -121,8 +121,13 @@ def _run_live_preview(outdir: Path, spec, config, proto) -> None:
         return
 
     # plan: split duration-based steps into sub-chunks, capped so the whole
-    # preview stays cheap (<=~30 chunks even for hour-long protocols)
-    steps = list(proto.steps) or [Step(kind="discharge", c_rate=1.0, duration_s=60.0)]
+    # preview stays cheap (<=~30 chunks even for hour-long protocols).  Loops
+    # are unrolled first so the preview reflects the true sequence.
+    flat, _infos = proto.expand()
+    steps = list(flat) or [
+        Step(kind="discharge", c_rate=1.0,
+             terminations=[{"type": "time", "operator": ">=", "value": 60.0}])
+    ]
     total_dur = 0.0
     n_cycles = max(1, int(proto.cycles))
     for _ in range(n_cycles):
@@ -138,16 +143,24 @@ def _run_live_preview(outdir: Path, spec, config, proto) -> None:
                 d = float(stp.duration_s)
                 n = max(1, int(math.ceil(d / chunk_s)))
                 for k in range(n):
+                    terms: list = [
+                        {"type": "time", "operator": ">=",
+                         "value": min(chunk_s, d - k * chunk_s)}
+                    ]
+                    if stp.kind == "hold":
+                        # preserve the CV end-current so the preview hold
+                        # behaves like the real solve
+                        for c in stp.terminations or []:
+                            if (c or {}).get("type") == "current":
+                                terms.append(dict(c))
                     sub = Step(
                         kind=stp.kind, c_rate=stp.c_rate, current_A=stp.current_A,
-                        power_W=stp.power_W,
-                        duration_s=min(chunk_s, d - k * chunk_s), cutoff_V=None,
-                        hold_voltage_V=stp.hold_voltage_V,
-                        cutoff_current_C=stp.cutoff_current_C,
+                        power_W=stp.power_W, hold_voltage_V=stp.hold_voltage_V,
+                        terminations=terms,
                     )
-                    plan.append(sub.to_string(spec.capacity_Ah))
+                    plan.append(sub.preview_string(spec.capacity_Ah))
             else:
-                plan.append(stp.to_string(spec.capacity_Ah))
+                plan.append(stp.preview_string(spec.capacity_Ah))
     n_total = len(plan)
 
     prev = None
@@ -298,7 +311,7 @@ def main(argv=None) -> int:
         from ..config.run import RunConfig
         from ..core.experiment import collect_metrics, run
 
-        spec = PouchCellSpec(**spec_dict)
+        spec = PouchCellSpec.from_dict(spec_dict)
         config = RunConfig(**cfg_dict)
         config.validate()
 
@@ -340,6 +353,15 @@ def main(argv=None) -> int:
         metrics["figures"] = _save_figures(outdir, sim, sol, config, spec, metrics)
         metrics["wall_s"] = round(time.time() - t0, 2)
         metrics["sizing_history"] = getattr(sim, "sizing_history", [])
+        # record what was *actually* run (thermal maps may have overridden the
+        # user's model/dim/thermal) plus any UI guard warnings, so a saved run
+        # is reproducible and the override is visible in Results/History.
+        from ..config.protocol import Protocol as _Protocol
+        from ..core.constraints import resolve_effective
+
+        _proto = _Protocol.from_dict(config.protocol) if config.protocol else None
+        metrics["effective_config"] = resolve_effective(config, _proto)
+        metrics["warnings"] = payload.get("warnings", [])
 
         stop.set()
         (outdir / "result.json").write_text(
