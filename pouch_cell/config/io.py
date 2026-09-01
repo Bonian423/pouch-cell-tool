@@ -127,3 +127,48 @@ def resolve_parameter_set(name: str) -> tuple[str, dict]:
         uset = load_user_parameter_set(name)
         return uset.get("base", name), dict(uset.get("overrides") or {})
     return name, {}
+
+
+# --------------------------------------------------------------------------- #
+# Saved protocols (full Protocol.as_dict(), steps + run conditions)
+# --------------------------------------------------------------------------- #
+PROTOCOL_DIR = PROJECT_ROOT / "pouch_output" / "protocols"
+
+
+def protocol_path(name: str) -> Path:
+    """Path for a named saved protocol (name may omit ``.json``)."""
+    if not name.lower().endswith(".json"):
+        name += ".json"
+    return PROTOCOL_DIR / name
+
+
+def list_saved_protocols() -> list[str]:
+    """Names (without extension) of the saved protocols on disk."""
+    if not PROTOCOL_DIR.is_dir():
+        return []
+    return sorted(p.stem for p in PROTOCOL_DIR.glob("*.json"))
+
+
+def save_protocol(name: str, proto) -> Path:
+    """Write a protocol's ``as_dict()`` and return its path."""
+    PROTOCOL_DIR.mkdir(parents=True, exist_ok=True)
+    path = protocol_path(name)
+    path.write_text(
+        json.dumps(proto.as_dict(), indent=2, default=str), encoding="utf-8"
+    )
+    return path
+
+
+def load_protocol(name: str) -> dict:
+    """Load a saved protocol as a raw ``as_dict()`` dict."""
+    path = protocol_path(name)
+    if not path.is_file():
+        raise FileNotFoundError(f"No saved protocol '{name}' at {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def delete_protocol(name: str) -> None:
+    """Delete a saved protocol."""
+    path = protocol_path(name)
+    if path.is_file():
+        os.remove(path)

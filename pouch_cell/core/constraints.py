@@ -193,10 +193,14 @@ def protocol_violations(proto, cfg) -> list[Violation]:
         return vios
     eff = resolve_effective(cfg, proto)
     isothermal = eff["thermal"] == "isothermal"
-    src = getattr(proto, "temperature_source", "volume_averaged")
+    run_conds = list(getattr(proto, "run_conditions", None) or [])
+    src = getattr(proto, "default_temperature_source", "volume_averaged")
+    limit_sources = {c.get("source") or src for c in run_conds
+                     if (c or {}).get("type") == "temp_limit"}
 
     # --- temperature source: hot-spot needs a 2+1D x-lumped solve ----------
-    if src == "hot_spot" and not (
+    uses_hot_spot = src == "hot_spot" or "hot_spot" in limit_sources
+    if uses_hot_spot and not (
         eff["dimensionality"] == 2 and eff["thermal"] == "x-lumped"
     ):
         vios.append(Violation(
@@ -210,7 +214,7 @@ def protocol_violations(proto, cfg) -> list[Violation]:
         conds = list(getattr(s, "terminations", None) or [])
         # a loop marker has no end condition by design — it is consumed during
         # loop unrolling and never solved as a real step
-        is_loop_marker = s.loop_to is not None and isinstance(s.loop_to, int)
+        is_loop_marker = s.kind == "loop"
         if not conds and not is_loop_marker:
             vios.append(Violation(
                 "blocked",
@@ -225,12 +229,15 @@ def protocol_violations(proto, cfg) -> list[Violation]:
                     "non-isothermal thermal model.",
                     control=f"step_{i}",
                 ))
-        if s.loop_to is not None:
-            if not 0 <= int(s.loop_to) < i:
+        if is_loop_marker:
+            lt = s.loop_to
+            ok_target = (isinstance(lt, int) and 0 <= lt < i
+                         and steps[lt].kind != "loop")
+            if not ok_target:
                 vios.append(Violation(
                     "blocked",
-                    f"Step {i + 1}: loop target must be an earlier step "
-                    f"(0..{i - 1}).",
+                    f"Step {i + 1}: loop target must be an earlier non-loop "
+                    f"step (0..{i - 1}).",
                     control=f"step_{i}",
                 ))
             if int(s.loop_count or 1) < 1:
@@ -240,12 +247,20 @@ def protocol_violations(proto, cfg) -> list[Violation]:
                     control=f"step_{i}",
                 ))
 
-    # --- run-level temperature stop needs a non-isothermal thermal ---------
-    if getattr(proto, "temperature_stop", None) is not None and isothermal:
+    # --- run-level conditions ----------------------------------------------
+    if any(c.get("type") == "temp_limit" for c in run_conds) and isothermal:
         vios.append(Violation(
             "blocked",
-            "Run-level temperature stop needs a non-isothermal thermal model.",
+            "Run-level cell temperature limit needs a non-isothermal thermal "
+            "model.",
             control="temperature_stop",
+        ))
+    if not proto.expand()[0]:
+        vios.append(Violation(
+            "blocked",
+            "Protocol has no runnable steps — every step is a loop marker. "
+            "Add at least one discharge / charge / rest / hold step.",
+            control="steps",
         ))
 
     # --- runaway-loop guard -------------------------------------------------

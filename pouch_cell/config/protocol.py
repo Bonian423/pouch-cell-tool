@@ -1,18 +1,19 @@
 """Protocol definitions for multi-step (cycling) simulations.
 
-A protocol is an ordered list of steps -- discharge / charge / rest / hold --
-optionally repeated for ``N`` cycles, with an output ``period``, an overall
-``termination`` condition and an optional experiment ``temperature``.
+A protocol is an ordered list of steps -- discharge / charge / rest / hold /
+loop -- with an output ``period`` and a list of run-level ``run_conditions``
+(termination / boundary conditions).
 
 Each step ends when **any** of its end conditions fires (Neware-style OR
-semantics): time (duration), voltage, current, temperature or capacity.  Steps
-can also act as **loop points** (jump back to an earlier step, repeated N
-times, optionally until a condition) and the protocol supports a run-level
-``temperature_stop`` safety limit.
+semantics): time (duration), voltage, current, temperature or capacity.  A
+``loop`` step is a pure control marker: it jumps back to an earlier step and
+repeats the block ``×N`` times (optionally until a condition) and is never
+solved itself.
 
 The protocol serialises to PyBaMM ``Experiment`` step objects
 (:meth:`Step.to_pybamm_step`), so non-native conditions (temperature /
-capacity) ride PyBaMM's ``CustomTermination`` events.
+capacity) ride PyBaMM's ``CustomTermination`` events; run-level temperature /
+current / capacity conditions are evaluated post-hoc at step ends.
 """
 from __future__ import annotations
 
@@ -76,6 +77,8 @@ class Step:
 
     # -- display ---------------------------------------------------------- #
     def _action_str(self) -> str:
+        if self.kind == "loop":
+            return "Loop"
         if self.kind == "rest":
             return "Rest"
         if self.kind == "hold":
@@ -114,6 +117,16 @@ class Step:
     def to_string(self, capacity_Ah: float) -> str:
         """Human-readable (honest) step description, incl. temperature /
         capacity conditions."""
+        if self.kind == "loop":
+            tgt = int(self.loop_to or 0) + 1
+            cnt = max(1, int(self.loop_count or 1))
+            s = f"Loop back to step {tgt} \u00d7{cnt}"
+            until = [self._condition_text(c, capacity_Ah)
+                     for c in self.loop_until or []]
+            until = [u for u in until if u]
+            if until:
+                s += " until " + " or ".join(until)
+            return s
         parts = [self._action_str()]
         conds = [self._condition_text(c, capacity_Ah)
                  for c in self.terminations or []]
@@ -227,6 +240,10 @@ class Step:
         """Build a :class:`pybamm.step.BaseStep` for the real solve."""
         import pybamm
 
+        if self.kind == "loop":
+            raise ValueError(
+                "loop steps are control markers and are never solved directly"
+            )
         duration, terms = self._pybamm_terminations(capacity_Ah, temp_source)
         if self.kind == "rest":
             return pybamm.step.rest(duration=duration, termination=terms or None)
@@ -290,16 +307,17 @@ class Protocol:
     steps: list = field(default_factory=list)  # list[Step]
     cycles: int = 1
     period: str | None = None
-    termination: list = field(default_factory=list)  # e.g. ["80% capacity"]
-    temperature_K: float | None = None
     thermal_maps: bool = True        # save a thermal map at the end of each step
     step_map_mode: str = "every"     # every | cycle_last
-    # run-level temperature safety stop (K) -- evaluated post-hoc, since
-    # PyBaMM has no experiment-level temperature termination
-    temperature_stop: float | None = None
-    # temperature source used by temperature conditions: "volume_averaged" |
-    # "hot_spot" (max over the 2+1D y-z field; only valid on 2+1D x-lumped)
-    temperature_source: str = "volume_averaged"
+    # default temperature source for temperature conditions:
+    # "volume_averaged" | "hot_spot" (max over the 2+1D y-z field; only valid
+    # on 2+1D x-lumped).  Run conditions may override per condition.
+    default_temperature_source: str = "volume_averaged"
+    # run-level termination / boundary conditions.  Each dict:
+    #   {"type": "ambient_temp"|"temp_limit"|"voltage"|"capacity"|"time"|
+    #    "current", "operator": "<="|">=", "value": float, "unit": ... ,
+    #    "source": "volume_averaged"|"hot_spot"}   # source only for temp_limit
+    run_conditions: list = field(default_factory=list)
 
     # -- factories for the quick presets ---------------------------------- #
     @classmethod
@@ -356,21 +374,24 @@ class Protocol:
         dicts ``{"loop_to", "count", "until", "iter_ends"}`` with
         ``iter_ends`` = flat indices of the last step of each loop iteration
         (used by the post-hoc loop-until evaluation in ``run_protocol``).
+
+        A ``kind == "loop"`` step is a pure marker: it is never emitted and
+        its repeated block is ``steps[loop_to .. i-1]`` (the marker row
+        itself is excluded).  Leftover ``loop_to`` on non-loop steps is
+        ignored.
         """
         loop_infos: list[dict] = []
-        tagged = self._expand_range(0, len(self.steps), False, loop_infos)
+        tagged = self._expand_range(0, len(self.steps), loop_infos)
         return [c for (_i, c) in tagged], loop_infos
 
-    def _expand_range(self, start: int, end: int, suppress_last: bool,
-                      loop_infos: list) -> list:
+    def _expand_range(self, start: int, end: int, loop_infos: list) -> list:
         """Expand ``self.steps[start:end]``.
 
         Returns ``(original_index, deepcopy)`` tuples so a loop can trim the
         already-emitted steps it is about to re-emit: a marker at ``i`` that
         jumps to ``t`` must output ``steps[start..t-1]`` once and then
-        ``steps[t..i]`` ``count`` times -- never double-counting the prefix.
-        ``suppress_last`` treats a loop marker at ``end-1`` as a plain step
-        (it is a consumed marker).
+        ``steps[t..i-1]`` ``count`` times -- never double-counting the prefix
+        and never emitting the marker itself.
         """
         steps = self.steps
         out: list[tuple[int, Step]] = []
@@ -378,11 +399,11 @@ class Protocol:
         while idx < end:
             s = steps[idx]
             lt = s.loop_to
-            is_marker = lt is not None and isinstance(lt, int) and 0 <= lt < idx
-            is_last = idx == end - 1
-            if is_marker and not (suppress_last and is_last):
+            is_marker = (s.kind == "loop" and isinstance(lt, int)
+                         and 0 <= lt < idx)
+            if is_marker:
                 t = int(lt)
-                body = self._expand_range(t, idx + 1, True, loop_infos)
+                body = self._expand_range(t, idx, loop_infos)
                 # the loop block starts at t, which was already emitted while
                 # scanning [start..idx-1] -> drop that tail before re-emitting
                 out = [(i, c) for (i, c) in out if i < t]
@@ -396,12 +417,7 @@ class Protocol:
                     "until": list(s.loop_until or []), "iter_ends": iter_ends,
                 })
             else:
-                cpy = copy.deepcopy(s)
-                if is_marker and suppress_last and is_last:
-                    cpy.loop_to = None
-                    cpy.loop_count = 1
-                    cpy.loop_until = []
-                out.append((idx, cpy))
+                out.append((idx, copy.deepcopy(s)))
             idx += 1
         return out
 
@@ -425,6 +441,49 @@ class Protocol:
         steps = [s.to_pybamm_step(capacity_Ah, temp_source) for s in flat]
         return [tuple(steps)] * max(1, int(self.cycles))
 
+    # -- run-level conditions --------------------------------------------- #
+    def run_condition_ambient_K(self) -> float | None:
+        """Ambient / experiment temperature (K) from the run conditions, or
+        ``None`` (use the model's initial temperature)."""
+        for c in self.run_conditions or []:
+            if (c or {}).get("type") == "ambient_temp":
+                val = float((c or {}).get("value", 0.0))
+                return val + 273.15 if (c or {}).get("unit") == "C" else val
+        return None
+
+    def run_termination_strings(self, spec) -> list[str]:
+        """PyBaMM experiment termination strings for the natively-supported
+        run conditions (voltage / capacity% / time).  Temperature and current
+        limits are evaluated post-hoc at step ends (PyBaMM can't stop a run
+        on them natively)."""
+        out: list[str] = []
+        for c in self.run_conditions or []:
+            typ = (c or {}).get("type")
+            val = float((c or {}).get("value", 0.0))
+            unit = (c or {}).get("unit")
+            if typ == "voltage":
+                out.append(f"{val:g} V")
+            elif typ == "capacity" and unit == "%":
+                out.append(f"{val:g}% capacity")
+            elif typ == "time":
+                out.append(fmt_duration(val))
+        return out
+
+    def termination_conditions(self) -> list[dict]:
+        """Run conditions that act as run terminations (excludes the ambient
+        temperature boundary condition).  ``temp_limit`` is normalised to
+        ``type == "temperature"`` for the shared condition evaluator."""
+        out: list[dict] = []
+        for c in self.run_conditions or []:
+            c = dict(c or {})
+            if c.get("type") == "ambient_temp":
+                continue
+            if c.get("type") == "temp_limit":
+                c = dict(c)
+                c["type"] = "temperature"
+            out.append(c)
+        return out
+
     def as_dict(self) -> dict:
         d = asdict(self)
         d["steps"] = [s.as_dict() for s in self.steps]
@@ -436,4 +495,15 @@ class Protocol:
             return cls()
         data = dict(data)
         steps = [Step.from_dict(s) for s in data.pop("steps", [])]
+        # legacy fields that no longer exist on the model -- drop silently so
+        # old saved sessions still load (best-effort).  A legacy
+        # ``temperature_source`` only fills the default if the new field is
+        # absent (the new field wins).
+        for _k in ("termination", "temperature_K", "temperature_stop"):
+            data.pop(_k, None)
+        if "temperature_source" in data:
+            data.setdefault("default_temperature_source",
+                            data.pop("temperature_source"))
+        data.setdefault("run_conditions", [])
+        data.setdefault("default_temperature_source", "volume_averaged")
         return cls(steps=steps, **data)

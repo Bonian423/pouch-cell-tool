@@ -176,12 +176,13 @@ def _mark_tabs(ax, spec, z_hi_cm):
         )
 
 
-def draw_cooling_regions(ax, spec) -> None:
+def draw_cooling_regions(ax, spec, unified: bool = False) -> None:
     """Overlay the user's 2D cooling geometry as translucent patches.
 
     Same cm convention as the maps (y = width on x, z = height on y, tabs at
-    the top).  Surface patches are drawn blue, edge bands green, both with
-    dashed outlines.
+    the top).  By default surface patches are blue and edge bands green
+    (editing clarity).  ``unified=True`` draws every region in the same blue
+    (used by the panel schematic, where the legend just says "cooling area").
     """
     from matplotlib.patches import Ellipse, Rectangle
 
@@ -192,9 +193,14 @@ def draw_cooling_regions(ax, spec) -> None:
     h_cm = float(spec.height) * 100.0
     for r in regions:
         cat = region_category(r)
-        edgecolor = "#1f77b4" if cat == "surface" else "#2ca02c"
-        fc = dict(facecolor=edgecolor, alpha=0.28, edgecolor=edgecolor,
-                  lw=1.2, ls="--")
+        if unified:
+            edgecolor = "#1f77b4"
+            fc = dict(facecolor=edgecolor, alpha=0.55, edgecolor="#90caf9",
+                      lw=1.0, ls="--")
+        else:
+            edgecolor = "#1f77b4" if cat == "surface" else "#2ca02c"
+            fc = dict(facecolor=edgecolor, alpha=0.28, edgecolor=edgecolor,
+                      lw=1.2, ls="--")
         if cat == "edge" and r.get("edge"):
             a0 = float(r.get("along_start", 0.0)) * 100.0
             a1 = float(r.get("along_end", 0.05)) * 100.0
@@ -444,9 +450,9 @@ def plot_cell_schematic(spec: PouchCellSpec, figsize=(2.2, 2.3)) -> plt.Figure:
     fig, ax = plt.subplots(figsize=figsize)
     w_cm = float(spec.width) * 100.0
     h_cm = float(spec.height) * 100.0
-    ax.add_patch(Rectangle((0, 0), w_cm, h_cm, facecolor="#eef2f7",
-                           edgecolor="black", lw=1.5))
-    draw_cooling_regions(ax, spec)
+    ax.add_patch(Rectangle((0, 0), w_cm, h_cm, facecolor="#1a1a1a",
+                           edgecolor="0.85", lw=1.5))
+    draw_cooling_regions(ax, spec, unified=True)
     _mark_tabs(ax, spec, h_cm)
     # dimension call-outs
     ax.annotate("", xy=(w_cm, -0.05 * h_cm), xytext=(0.0, -0.05 * h_cm),

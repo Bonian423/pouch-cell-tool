@@ -32,6 +32,46 @@ with common.page_body():
     spec = st.session_state.spec
     cfg = st.session_state.config
 
+    # ------------------------------------------------------------------ save/import
+    st.markdown("#### Save / import custom parameter sets")
+    st.caption(
+        "Save the current overrides as a **named parameter set**, then pick it as "
+        "the parameter set on the Model & Run page (or import it back here to edit "
+        "and re-save)."
+    )
+    c1, c2 = st.columns([1, 2])
+    set_name = c1.text_input("Name for your parameter set", key="d_pset_name")
+    set_desc = c1.text_input(
+        "Optional description", key="d_pset_desc",
+        help="Shown in the parameter-set browser on the Model page.",
+    )
+    if c1.button("Save as parameter set", width="stretch") and set_name.strip():
+        base, _ = preset_io.resolve_parameter_set(cfg.parameter_set)
+        preset_io.save_user_parameter_set(
+            set_name.strip(), base, dict(cfg.extra_overrides or {}),
+            description=set_desc,
+        )
+        st.success(f"Saved custom parameter set `{set_name.strip()}` (base `{base}`).")
+        st.rerun()
+    saved_sets = preset_io.list_user_parameter_sets()
+    if saved_sets:
+        sel_set = c2.selectbox(
+            "Saved custom sets", ["— select —"] + saved_sets, key="d_pset_sel"
+        )
+        b1, b2 = st.columns(2)
+        if b1.button("Import into editor", width="stretch") and sel_set != "— select —":
+            uset = preset_io.load_user_parameter_set(sel_set)
+            ov = cfg.extra_overrides
+            ov.clear()
+            ov.update(uset.get("overrides") or {})
+            cfg.parameter_set = uset.get("base", cfg.parameter_set)
+            st.rerun()
+        if b2.button("Delete", width="stretch") and sel_set != "— select —":
+            preset_io.delete_user_parameter_set(sel_set)
+            st.rerun()
+
+    st.divider()
+
     # ------------------------------------------------------------------ manual
     manual = st.checkbox(
         "Manual thicknesses (disable auto-sizing)", value=False, key="d_manual"
@@ -209,40 +249,4 @@ with common.page_body():
         render_param_table(cfg.parameter_set, ov)
         if st.button("Reset ALL parameter overrides"):
             ov.clear()
-            st.rerun()
-
-    st.divider()
-    st.markdown("#### Save / import custom parameter sets")
-    st.caption(
-        "Save the current overrides as a **named parameter set**, then pick it as "
-        "the parameter set on the Model & Run page (or import it back here to edit "
-        "and re-save)."
-    )
-    c1, c2 = st.columns([1, 2])
-    set_name = c1.text_input("Name for your parameter set", key="d_pset_name")
-    set_desc = c1.text_input(
-        "Optional description", key="d_pset_desc",
-        help="Shown in the parameter-set browser on the Model page.",
-    )
-    if c1.button("Save as parameter set", width="stretch") and set_name.strip():
-        base, _ = preset_io.resolve_parameter_set(cfg.parameter_set)
-        preset_io.save_user_parameter_set(
-            set_name.strip(), base, dict(ov), description=set_desc
-        )
-        st.success(f"Saved custom parameter set `{set_name.strip()}` (base `{base}`).")
-        st.rerun()
-    saved_sets = preset_io.list_user_parameter_sets()
-    if saved_sets:
-        sel_set = c2.selectbox(
-            "Saved custom sets", ["— select —"] + saved_sets, key="d_pset_sel"
-        )
-        b1, b2 = st.columns(2)
-        if b1.button("Import into editor", width="stretch") and sel_set != "— select —":
-            uset = preset_io.load_user_parameter_set(sel_set)
-            ov.clear()
-            ov.update(uset.get("overrides") or {})
-            cfg.parameter_set = uset.get("base", cfg.parameter_set)
-            st.rerun()
-        if b2.button("Delete", width="stretch") and sel_set != "— select —":
-            preset_io.delete_user_parameter_set(sel_set)
             st.rerun()

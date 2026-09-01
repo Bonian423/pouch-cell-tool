@@ -139,30 +139,34 @@ def collect_step_metrics(sol) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
-# Post-hoc temperature / loop-until stop evaluation.
+# Post-hoc run-termination / loop-until stop evaluation.
 #
 # PyBaMM 26.8 has no experiment-level temperature termination (its termination
 # strings support only capacity/voltage/time) and cannot branch mid-solve, so
-# a run-level ``temperature_stop`` and any loop ``loop_until`` conditions are
-# evaluated AFTER the solve by scanning the per-step metrics for the first
-# condition to fire, then truncating the reported steps.  The solve itself
-# always runs to completion (compute cost is documented in the UI).
+# the run-level conditions (temperature / current limits and capacity-Ah) and
+# any loop ``loop_until`` conditions are evaluated AFTER the solve by scanning
+# the per-step metrics for the first condition to fire, then truncating the
+# reported steps.  The solve itself always runs to completion (compute cost is
+# documented in the UI).  Voltage / capacity-% / time conditions are ALSO
+# mapped onto the experiment termination string so the solver stops cleanly.
 # --------------------------------------------------------------------------- #
 def _cond_met(c: dict, row: dict, spec: PouchCellSpec, temp_source: str) -> bool:
     """Evaluate one end-condition dict against a per-step metrics row."""
-    typ = (c or {}).get("type")
-    op = (c or {}).get("operator", ">=")
-    val = float((c or {}).get("value", 0.0))
-    unit = (c or {}).get("unit")
+    c = dict(c or {})
+    typ = c.get("type")
+    op = c.get("operator", ">=")
+    val = float(c.get("value", 0.0))
+    unit = c.get("unit")
     if typ == "voltage":
         v = row.get("V_end")
         return v is not None and (v <= val if op == "<=" else v >= val)
     if typ == "current":
         i = abs(row.get("I_end_A") or 0.0)
         return i <= val if op == "<=" else i >= val
-    if typ == "temperature":
+    if typ in ("temperature", "temp_limit"):
         kv = val + 273.15 if unit == "C" else val
-        t = (row.get("T_end_hotspot_K") if temp_source == "hot_spot"
+        src = c.get("source") or temp_source
+        t = (row.get("T_end_hotspot_K") if src == "hot_spot"
              else row.get("T_end_volav_K", row.get("T_end_hotspot_K")))
         if t is None or t != t:  # nan
             return False
@@ -177,20 +181,18 @@ def _cond_met(c: dict, row: dict, spec: PouchCellSpec, temp_source: str) -> bool
 def _posthoc_stop(proto: Protocol, sol, spec: PouchCellSpec,
                   temp_source: str) -> dict | None:
     """Return ``{"reason", "cycle", "step", "index", "message"}`` for the first
-    condition to fire (run-level temperature stop + every loop-until), or None.
-    ``index`` is the number of step rows to keep (exclusive end)."""
+    condition to fire (run-level termination conditions + every loop-until), or
+    None.  ``index`` is the number of step rows to keep (exclusive end)."""
     rows = collect_step_metrics(sol)
     if not rows:
         return None
     candidates: list[tuple[int, str]] = []
-    # run-level temperature stop (K)
-    tstop = getattr(proto, "temperature_stop", None)
-    if tstop is not None:
+    # run-level termination conditions (voltage/capacity/time/current/temp)
+    for c in proto.termination_conditions():
+        src = c.get("source") or temp_source
         for ri, row in enumerate(rows):
-            t = (row.get("T_end_hotspot_K") if temp_source == "hot_spot"
-                 else row.get("T_end_volav_K", row.get("T_end_hotspot_K")))
-            if t is not None and t == t and t >= tstop:
-                candidates.append((ri, "temperature"))
+            if _cond_met(c, row, spec, src):
+                candidates.append((ri, c.get("type", "condition")))
                 break
     # loop-until conditions at iteration ends
     flat, infos = proto.expand()
@@ -208,10 +210,11 @@ def _posthoc_stop(proto: Protocol, sol, spec: PouchCellSpec,
         return None
     ri, reason = min(candidates, key=lambda x: x[0])
     row = rows[ri]
-    if reason == "temperature":
-        msg = f"temperature limit reached at cycle {row['cycle']} step {row['step']}"
-    else:
-        msg = f"loop exit condition met at cycle {row['cycle']} step {row['step']}"
+    _labels = {"temperature": "temperature limit", "loop": "loop exit condition",
+               "voltage": "voltage limit", "capacity": "capacity limit",
+               "time": "time limit", "current": "current limit"}
+    label = _labels.get(reason, f"{reason} condition")
+    msg = f"{label} reached at cycle {row['cycle']} step {row['step']}"
     return {"reason": reason, "cycle": row["cycle"], "step": row["step"],
             "index": ri + 1, "message": msg}
 
@@ -231,10 +234,10 @@ def run_protocol(
     sim = _build_simulation(spec, config, model, dim, thermal, mesh)
     _t_build = time.time() - _t0
     experiment = pybamm.Experiment(
-        proto.experiment_cycles(spec.capacity_Ah, proto.temperature_source),
+        proto.experiment_cycles(spec.capacity_Ah, proto.default_temperature_source),
         period=proto.period,
-        temperature=proto.temperature_K,
-        termination=proto.termination or None,
+        temperature=proto.run_condition_ambient_K(),
+        termination=proto.run_termination_strings(spec) or None,
     )
     _t0 = time.time()
     sol = sim.run_experiment_obj(experiment, callbacks=callbacks)
@@ -251,8 +254,8 @@ def run_protocol(
     metrics["steps"] = collect_step_metrics(sol)
     metrics["timeline"] = {"build_s": round(_t_build, 3),
                            "solve_s": round(_t_solve, 3)}
-    # post-hoc temperature / loop-until stop (PyBaMM can't do these at runtime)
-    stop = _posthoc_stop(proto, sol, spec, proto.temperature_source)
+    # post-hoc run-termination / loop-until stop (PyBaMM can't do these at runtime)
+    stop = _posthoc_stop(proto, sol, spec, proto.default_temperature_source)
     if stop:
         metrics["steps"] = metrics["steps"][: stop["index"]]
         metrics["stopped"] = {k: stop[k]

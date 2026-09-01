@@ -613,9 +613,9 @@ _SETTING_LABELS = {
     "per_face_h": "Per-face h", "extra_overrides": "Raw overrides",
     # protocol
     "type": "Protocol type", "cycles": "Cycles", "period": "Period",
-    "termination": "Termination", "temperature_K": "Experiment T (K)",
     "thermal_maps": "Thermal maps", "step_map_mode": "Map mode",
-    "temperature_stop": "Temp stop", "temperature_source": "Temp source",
+    "run_conditions": "Run conditions",
+    "default_temperature_source": "Temp source (default)",
 }
 
 
@@ -668,10 +668,11 @@ def diff_settings(spec, cfg, thermal, proto) -> list[tuple[str, str]]:
         rows.append(("Per-face h", f"{len(thermal.per_face_h)} face(s)"))
     if thermal.extra_overrides:
         rows.append(("Raw overrides", f"{len(thermal.extra_overrides)} key(s)"))
-    for f in ("type", "cycles", "period", "termination", "temperature_K",
-              "thermal_maps", "step_map_mode", "temperature_stop",
-              "temperature_source"):
+    for f in ("type", "cycles", "period", "thermal_maps", "step_map_mode",
+              "default_temperature_source"):
         _add(f, getattr(proto, f), getattr(default_proto, f), _SETTING_LABELS)
+    if len(proto.run_conditions or []) != len(default_proto.run_conditions or []):
+        rows.append(("Run conditions", f"{len(proto.run_conditions or [])}"))
     if len(proto.steps) != len(default_proto.steps):
         rows.append(("Steps", f"{len(proto.steps)}"))
     n_ov = len(cfg.extra_overrides or {})
@@ -691,9 +692,10 @@ def diff_settings(spec, cfg, thermal, proto) -> list[tuple[str, str]]:
 def render_persistent_panel() -> None:
     """Render the persistent right-side panel (replaces the Overview tab).
 
-    A live cell schematic (with dimensions) on top, then the user-changed
-    parameters.  Always reflects the CURRENT session config.  Call inside the
-    right column of ``page_body()``.
+    Order: cell schematic with its legend to the right (small font), then the
+    compact "run condition" block, then the user-changed parameters in tight
+    type.  Always reflects the CURRENT session config.  Call inside the right
+    column of ``page_body()``.
     """
     spec = st.session_state.spec
     cfg = st.session_state.config
@@ -706,16 +708,24 @@ def render_persistent_panel() -> None:
         from .. import plotting
 
         fig = plotting.plot_cell_schematic(spec)
-        c_fig, c_leg = st.columns([1.5, 1], vertical_alignment="center")
+        c_fig, c_leg = st.columns([1.55, 1], vertical_alignment="center")
         with c_fig:
             st.pyplot(fig, width="stretch")
         with c_leg:
             st.markdown(
-                "**Legend**  \n"
-                "• red = tabs  \n"
-                "• blue = surface cooling patch  \n"
-                "• green = edge cooling band  \n"
-                "• dashed = dimensions"
+                '<div style="font-size:11px;line-height:1.35;">'
+                '<span style="display:inline-block;width:9px;height:9px;'
+                'background:#e53935;border:1px solid #444;margin-right:5px;">'
+                '</span>tabs<br>'
+                '<span style="display:inline-block;width:9px;height:9px;'
+                'background:#1f77b4;border:1px solid #444;margin-right:5px;">'
+                '</span>cooling area<br>'
+                '<span style="display:inline-block;width:9px;height:9px;'
+                'background:#1a1a1a;border:1px solid #666;margin-right:5px;">'
+                '</span>cell<br>'
+                '<span style="color:#777;">&#8211; &#8211; dimensions</span>'
+                '</div>',
+                unsafe_allow_html=True,
             )
         plt.close(fig)
     except Exception:  # noqa: BLE001 - schematic is best-effort
@@ -725,25 +735,26 @@ def render_persistent_panel() -> None:
         f"thickness {spec.thickness_total * 1e3:.0f} mm · **{spec.capacity_Ah:.1f} Ah**"
     )
 
+    # --- run condition (compact) -------------------------------------------
+    eff = resolve_effective(cfg, proto)
+    st.divider()
+    st.caption(
+        f"**Run condition:** `{eff['model']}` · dim {eff['dimensionality']} · "
+        f"`{eff['thermal']}` · `{eff['mesh']}` · `{cfg.parameter_set}` · "
+        f"SOC {cfg.initial_soc:.0%} · `{cfg.solver}`"
+    )
+
+    # --- changed parameters (compact) --------------------------------------
     st.divider()
     st.markdown("**Changed parameters**")
     rows = diff_settings(spec, cfg, thermal, proto)
     if not rows:
         st.caption("All defaults — nothing changed.")
     else:
-        for label, value in rows:
-            st.markdown(f"- **{label}:** {value}")
+        st.caption(
+            "  \n".join(f"• **{label}:** {value}" for label, value in rows)
+        )
 
-    st.divider()
-    eff = resolve_effective(cfg, proto)
-    st.markdown(
-        f"**Run:** `{eff['model']}` · dim {eff['dimensionality']} · "
-        f"`{eff['thermal']}` · `{eff['mesh']}`"
-    )
-    st.caption(
-        f"Current: param_set `{cfg.parameter_set}` · "
-        f"SOC {cfg.initial_soc:.0%} · solver `{cfg.solver}`"
-    )
     stopped = (st.session_state.get("last_result") or {}).get("stopped")
     if stopped:
         st.caption(f"Last run stopped: {stopped.get('message', '')}")

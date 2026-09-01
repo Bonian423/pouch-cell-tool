@@ -12,6 +12,7 @@ The active protocol is stored in ``session_state.protocol``; pressing **Run**
 """
 import streamlit as st
 
+from pouch_cell.config import io as preset_io
 from pouch_cell.config.protocol import Protocol, Step
 from pouch_cell.ui import common
 
@@ -23,18 +24,29 @@ with common.page_body():
     proto = st.session_state.protocol
     spec = st.session_state.spec
 
-    KINDS = ["discharge", "charge", "rest", "hold"]
+KINDS = ["discharge", "charge", "rest", "hold", "loop"]
     COND_OPTIONS = {
         "discharge": ["Duration (s)", "Cut-off voltage (V)", "Current (A)",
                       "Temperature (°C)", "Capacity"],
         "charge": ["Duration (s)", "Cut-off voltage (V)", "Current (A)",
-                   "Temperature (°C)", "Capacity"],
+                    "Temperature (°C)", "Capacity"],
         "rest": ["Duration (s)", "Temperature (°C)"],
         "hold": ["Duration (s)", "Current (A)", "Temperature (°C)"],
     }
     COND_TYPE_NAMES = ["voltage", "current", "temperature", "capacity"]
-    # Kind | Input mode | Value | Until | End value | Loop back to | ×N | + | ✕
-    _COL_SPEC = [1.0, 1.0, 0.95, 1.0, 0.95, 1.0, 0.65, 0.55, 0.45]
+    # run-level condition types + display labels
+    RUN_COND_TYPES = ["ambient_temp", "temp_limit", "voltage", "capacity",
+                      "time", "current"]
+    RUN_COND_LABELS = {
+        "ambient_temp": "Ambient / experiment temperature",
+        "temp_limit": "Cell temperature limit",
+        "voltage": "Voltage limit",
+        "capacity": "Capacity",
+        "time": "Time",
+        "current": "Current",
+    }
+    # Type | Mode / Loop target | Value / ×N | Until | End value | + | ✕
+    _COL_SPEC = [1.0, 1.0, 0.95, 1.0, 0.95, 0.55, 0.45]
 
     # ------------------------------------------------------------------ helpers
     def _default_step() -> dict:
@@ -175,6 +187,153 @@ with common.page_body():
         if st.button(f"+ Add condition", key=f"{prefix}_{list_key}_add"):
             items.append({"type": "voltage", "operator": "<=", "value": 1.0})
 
+    def _step_from_ui(s: dict) -> Step:
+        """Build a :class:`Step` from a UI row dict (editor + save share this)."""
+        if s["kind"] == "loop":
+            return Step(
+                kind="loop",
+                loop_to=s.get("loop_to"),
+                loop_count=int(s.get("loop_count", 1) or 1),
+                loop_until=[dict(c) for c in s.get("loop_until", [])
+                            if c.get("type")],
+            )
+        terms = []
+        p = _primary_condition(s)
+        if p:
+            terms.append(p)
+        terms += [dict(c) for c in s.get("extra", []) if c.get("type")]
+        return Step(
+            kind=s["kind"],
+            c_rate=s["value"] if s["kind"] in ("discharge", "charge")
+                   and s["value_mode"] == "c_rate" else None,
+            current_A=s["value"] if s["kind"] in ("discharge", "charge")
+                      and s["value_mode"] == "current_A" else None,
+            power_W=s["value"] if s["kind"] in ("discharge", "charge")
+                    and s["value_mode"] == "power_W" else None,
+            hold_voltage_V=s["hold_v"] if s["kind"] == "hold" else None,
+            terminations=terms,
+        )
+
+    def _default_run_condition() -> dict:
+        return {"type": "voltage", "operator": "<=", "value": 2.5,
+                "unit": None, "source": "volume_averaged"}
+
+    def _render_run_conditions(items: list, prefix: str) -> None:
+        """Add/remove editor for the run-level termination/boundary list."""
+        remove_i = None
+        for k, c in enumerate(items):
+            c = dict(c)
+            typ = c.get("type", "voltage")
+            if typ not in RUN_COND_TYPES:
+                typ = "voltage"
+            r = st.columns([1.35, 0.7, 0.6, 0.85, 0.8, 0.5])
+            c["type"] = r[0].selectbox(
+                "Type", RUN_COND_TYPES, index=RUN_COND_TYPES.index(typ),
+                format_func=lambda t: RUN_COND_LABELS.get(t, t),
+                key=f"{prefix}_rc_{k}_t", label_visibility="collapsed",
+            )
+            typ = c["type"]
+            if typ == "ambient_temp":
+                c["operator"] = ">="
+                c["value"] = r[1].number_input(
+                    "Value", 0.0, 1e6, float(c.get("value", 298.15)),
+                    key=f"{prefix}_rc_{k}_v", format="%g",
+                    label_visibility="collapsed",
+                )
+                c["unit"] = r[2].selectbox(
+                    "Unit", ["K", "C"],
+                    index=0 if c.get("unit", "K") == "K" else 1,
+                    key=f"{prefix}_rc_{k}_u", label_visibility="collapsed",
+                )
+                r[3].caption("boundary")
+                r[4].caption("")
+            elif typ == "temp_limit":
+                c["source"] = r[1].selectbox(
+                    "Source", ["volume_averaged", "hot_spot"],
+                    index=0 if c.get("source", "volume_averaged")
+                       == "volume_averaged" else 1,
+                    key=f"{prefix}_rc_{k}_src", label_visibility="collapsed",
+                )
+                c["operator"] = r[2].selectbox(
+                    "Op", ["<=", ">="],
+                    index=0 if c.get("operator", ">=") == "<=" else 1,
+                    key=f"{prefix}_rc_{k}_o", label_visibility="collapsed",
+                )
+                c["value"] = r[3].number_input(
+                    "Value", 0.0, 1e6, float(c.get("value", 50.0)),
+                    key=f"{prefix}_rc_{k}_v", format="%g",
+                    label_visibility="collapsed",
+                )
+                c["unit"] = r[4].selectbox(
+                    "Unit", ["C", "K"],
+                    index=0 if c.get("unit", "C") == "C" else 1,
+                    key=f"{prefix}_rc_{k}_u", label_visibility="collapsed",
+                )
+            elif typ == "voltage":
+                c["operator"] = r[1].selectbox(
+                    "Op", ["<=", ">="],
+                    index=0 if c.get("operator", "<=") == "<=" else 1,
+                    key=f"{prefix}_rc_{k}_o", label_visibility="collapsed",
+                )
+                c["value"] = r[2].number_input(
+                    "Value", 0.0, 1e6, float(c.get("value", 2.5)),
+                    key=f"{prefix}_rc_{k}_v", format="%g",
+                    label_visibility="collapsed",
+                )
+                r[3].caption("V")
+                r[4].caption("")
+            elif typ == "capacity":
+                c["operator"] = r[1].selectbox(
+                    "Op", [">=", "<="],
+                    index=0 if c.get("operator", ">=") == ">=" else 1,
+                    key=f"{prefix}_rc_{k}_o", label_visibility="collapsed",
+                )
+                c["value"] = r[2].number_input(
+                    "Value", 0.0, 1e6, float(c.get("value", 80.0)),
+                    key=f"{prefix}_rc_{k}_v", format="%g",
+                    label_visibility="collapsed",
+                )
+                c["unit"] = r[3].selectbox(
+                    "Unit", ["%", "Ah"],
+                    index=0 if c.get("unit", "%") == "%" else 1,
+                    key=f"{prefix}_rc_{k}_u", label_visibility="collapsed",
+                )
+                r[4].caption("")
+            elif typ == "time":
+                c["operator"] = ">="
+                c["value"] = r[1].number_input(
+                    "Value", 0.0, 1e6, float(c.get("value", 3600.0)),
+                    key=f"{prefix}_rc_{k}_v", format="%g",
+                    label_visibility="collapsed",
+                )
+                r[2].caption("seconds")
+                r[3].caption("")
+                r[4].caption("")
+            else:  # current
+                c["operator"] = r[1].selectbox(
+                    "Op", ["<=", ">="],
+                    index=0 if c.get("operator", "<=") == "<=" else 1,
+                    key=f"{prefix}_rc_{k}_o", label_visibility="collapsed",
+                )
+                c["value"] = r[2].number_input(
+                    "Value", 0.0, 1e6, float(c.get("value", 0.05)),
+                    key=f"{prefix}_rc_{k}_v", format="%g",
+                    label_visibility="collapsed",
+                )
+                c["unit"] = r[3].selectbox(
+                    "Unit", ["A", "C"],
+                    index=0 if c.get("unit", "A") == "A" else 1,
+                    key=f"{prefix}_rc_{k}_u", label_visibility="collapsed",
+                )
+                r[4].caption("")
+            if r[5].button("✕", key=f"{prefix}_rc_{k}_rm"):
+                remove_i = k
+            items[k] = c
+        if remove_i is not None:
+            del items[remove_i]
+        if st.button("+ Add condition", key=f"{prefix}_rc_add"):
+            items.append(_default_run_condition())
+
     if "proto_steps" not in st.session_state:
         if proto.type == "custom" and proto.steps:
             st.session_state.proto_steps = [_step_to_ui(s) for s in proto.steps]
@@ -182,6 +341,67 @@ with common.page_body():
             st.session_state.proto_steps = [_default_step()]
     for _s in st.session_state.proto_steps:
         _migrate_step(_s)
+    if "proto_run_conditions" not in st.session_state:
+        st.session_state.proto_run_conditions = [
+            dict(c) for c in (proto.run_conditions or [])
+        ]
+    if "pc_default_src" not in st.session_state:
+        st.session_state.pc_default_src = (
+            proto.default_temperature_source or "volume_averaged"
+        )
+
+    # ------------------------------------------------------------------ save/load
+    with st.expander("Save / load protocol", expanded=False):
+        c1, c2 = st.columns([1, 1.6])
+        _pname = c1.text_input("Protocol name", key="pp_name")
+        if c1.button("Save protocol", width="stretch") and _pname.strip():
+            from pouch_cell.config.protocol import Protocol as _Proto
+
+            _cur = st.session_state.protocol
+            _steps = ([_step_from_ui(s) for s in st.session_state.proto_steps]
+                      if _cur.type == "custom" else _cur.steps)
+            _saved = _Proto(
+                type=_cur.type,
+                steps=_steps,
+                cycles=1,
+                period=(st.session_state.get("pc_period") or _cur.period),
+                thermal_maps=bool(st.session_state.get("pc_maps", _cur.thermal_maps)),
+                step_map_mode=st.session_state.get("pc_mapmode", _cur.step_map_mode),
+                default_temperature_source=st.session_state.get(
+                    "pc_default_src", "volume_averaged"),
+                run_conditions=[dict(c) for c in st.session_state.proto_run_conditions
+                                if c.get("type")],
+            )
+            preset_io.save_protocol(_pname.strip(), _saved)
+            st.success(f"Saved protocol `{_pname.strip()}`.")
+            st.rerun()
+        saved_protos = preset_io.list_saved_protocols()
+        if saved_protos:
+            _psel = c2.selectbox(
+                "Saved protocols", ["— select —"] + saved_protos, key="pp_sel",
+            )
+            b1, b2 = st.columns(2)
+            if b1.button("Load", width="stretch") and _psel != "— select —":
+                from pouch_cell.config.protocol import Protocol as _Proto
+
+                _loaded = _Proto.from_dict(preset_io.load_protocol(_psel))
+                st.session_state.protocol = _loaded
+                st.session_state.proto_steps = (
+                    [_step_to_ui(s) for s in _loaded.steps] if _loaded.steps
+                    else [_default_step()]
+                )
+                st.session_state.proto_run_conditions = [
+                    dict(c) for c in (_loaded.run_conditions or [])
+                ]
+                st.session_state.pc_default_src = (
+                    _loaded.default_temperature_source or "volume_averaged"
+                )
+                st.rerun()
+            if b2.button("Delete", width="stretch") and _psel != "— select —":
+                preset_io.delete_protocol(_psel)
+                st.rerun()
+        else:
+            c2.caption("No saved protocols yet.")
 
     # ------------------------------------------------------------------ type
     p_type = st.radio(
@@ -195,12 +415,8 @@ with common.page_body():
                  "Custom multi-step": "custom"}[p_type]
 
     # protocol options (custom branch overwrites these via widgets)
-    _cycles = int(proto.cycles)
+    _cycles = 1
     _period = proto.period or ""
-    _termination = ", ".join(proto.termination)
-    _temperature = float(proto.temperature_K or 0.0)
-    _t_stop = (float(proto.temperature_stop) - 273.15) if proto.temperature_stop else 0.0
-    _t_src = proto.temperature_source or "volume_averaged"
 
     # ------------------------------------------------------------------ builders
     custom_steps: list[Step] = []
@@ -261,154 +477,147 @@ with common.page_body():
 
         # fixed-height header row so every step row aligns regardless of label text
         hdr = st.columns(_COL_SPEC)
-        hdr[0].markdown("**Kind**")
-        hdr[1].markdown("**Input mode**")
-        hdr[2].markdown("**Value**")
-        hdr[3].markdown("**Until**", help="First end condition to fire stops the step")
+        hdr[0].markdown("**Type**")
+        hdr[1].markdown("**Mode / Loop target**")
+        hdr[2].markdown("**Value / ×N**")
+        hdr[3].markdown("**Until**",
+                        help="First end condition to fire stops the step.")
         hdr[4].markdown("**End value**")
-        hdr[5].markdown("**Loop back to**",
-                        help="After this step, jump back to an earlier step and "
-                             "repeat the block ×N times.")
-        hdr[6].markdown("**×N**")
-        hdr[7].markdown("")
-        hdr[8].markdown("")
+        hdr[5].markdown("")
+        hdr[6].markdown("")
 
         for i, s in enumerate(steps):
             cols = st.columns(_COL_SPEC)
+            _kind = s["kind"] if s["kind"] in KINDS else "discharge"
             s["kind"] = cols[0].selectbox(
-                "Kind", KINDS, index=KINDS.index(s["kind"]), key=f"ps_kind_{i}",
+                "Type", KINDS, index=KINDS.index(_kind), key=f"ps_kind_{i}",
                 label_visibility="collapsed",
-                help="Step type: constant-current / constant-voltage / rest.",
+                help="Step type: constant-current / constant-voltage / rest, "
+                     "or a **loop** marker (jump back to an earlier step and "
+                     "repeat the block ×N times).",
             )
-            if s["kind"] in ("discharge", "charge"):
-                s["value_mode"] = cols[1].selectbox(
-                    "Mode", ["c_rate", "current_A", "power_W"],
-                    index=["c_rate", "current_A", "power_W"].index(s["value_mode"]),
-                    key=f"ps_vm_{i}", label_visibility="collapsed",
-                    help="Input mode: C-rate, absolute current (A) or power (W). "
-                         "The sign is set by the step kind.",
-                )
-                s["value"] = cols[2].number_input(
-                    "Value", min_value=0.0, max_value=1e6, value=float(s["value"]),
-                    key=f"ps_val_{i}", format="%g", label_visibility="collapsed",
-                    help="Magnitude of the input.",
-                )
-            elif s["kind"] == "hold":
-                cols[1].caption("")
-                s["hold_v"] = cols[2].number_input(
-                    "Hold voltage (V)", 3.0, 4.5, float(s["hold_v"] or 4.2),
-                    key=f"ps_hv_{i}", label_visibility="collapsed",
-                    help="Constant-voltage (CV) hold level.",
-                )
-            else:  # rest
-                cols[1].caption("Rest —")
-                cols[2].caption("zero current")
+            if s["kind"] == "loop":
+                # pure loop marker row: no action, just jump + repeat
+                _non_loop = [j for j in range(i) if steps[j]["kind"] != "loop"]
+                if not _non_loop:
+                    cols[1].caption("add a step")
+                    cols[2].caption("")
+                else:
+                    _cur = s.get("loop_to")
+                    _cur = _cur if _cur in _non_loop else _non_loop[-1]
+                    s["loop_to"] = cols[1].selectbox(
+                        "Loop back to", _non_loop, index=_non_loop.index(_cur),
+                        format_func=lambda v: f"Step {v + 1}",
+                        key=f"ps_{i}_loopto", label_visibility="collapsed",
+                        help="After this step, jump back to the chosen earlier "
+                             "step and repeat the block ×N times.",
+                    )
+                    s["loop_count"] = cols[2].number_input(
+                        "×N", min_value=1, max_value=100,
+                        value=int(s.get("loop_count", 2) or 2),
+                        key=f"ps_{i}_loopn", label_visibility="collapsed",
+                        help="Total number of times the loop block runs "
+                             "(1 = no loop).",
+                    )
+                cols[3].caption("loop")
+                cols[4].caption("")
+            else:
+                if s["kind"] in ("discharge", "charge"):
+                    s["value_mode"] = cols[1].selectbox(
+                        "Mode", ["c_rate", "current_A", "power_W"],
+                        index=["c_rate", "current_A", "power_W"].index(s["value_mode"]),
+                        key=f"ps_vm_{i}", label_visibility="collapsed",
+                        help="Input mode: C-rate, absolute current (A) or power (W). "
+                             "The sign is set by the step type.",
+                    )
+                    s["value"] = cols[2].number_input(
+                        "Value", min_value=0.0, max_value=1e6, value=float(s["value"]),
+                        key=f"ps_val_{i}", format="%g", label_visibility="collapsed",
+                        help="Magnitude of the input.",
+                    )
+                elif s["kind"] == "hold":
+                    cols[1].caption("")
+                    s["hold_v"] = cols[2].number_input(
+                        "Hold voltage (V)", 3.0, 4.5, float(s["hold_v"] or 4.2),
+                        key=f"ps_hv_{i}", label_visibility="collapsed",
+                        help="Constant-voltage (CV) hold level.",
+                    )
+                else:  # rest
+                    cols[1].caption("Rest —")
+                    cols[2].caption("zero current")
 
-            opts = COND_OPTIONS[s["kind"]]
-            if s["end_type"] not in opts:
-                s["end_type"] = opts[0]
-            s["end_type"] = cols[3].selectbox(
-                "Until", opts, index=opts.index(s["end_type"]), key=f"ps_em_{i}",
-                label_visibility="collapsed",
-                help="End condition — the step stops when ANY condition fires "
-                     "(OR semantics). Extra conditions go in the per-step editor.",
-            )
-            s["end_value"] = cols[4].number_input(
-                "End value", min_value=0.0, max_value=1e6,
-                value=float(s["end_value"] or 0.0), key=f"ps_ev_{i}", format="%g",
-                label_visibility="collapsed",
-            )
+                opts = COND_OPTIONS[s["kind"]]
+                if s["end_type"] not in opts:
+                    s["end_type"] = opts[0]
+                s["end_type"] = cols[3].selectbox(
+                    "Until", opts, index=opts.index(s["end_type"]), key=f"ps_em_{i}",
+                    label_visibility="collapsed",
+                    help="End condition — the step stops when ANY condition fires "
+                         "(OR semantics). Extra conditions go in the per-step editor.",
+                )
+                s["end_value"] = cols[4].number_input(
+                    "End value", min_value=0.0, max_value=1e6,
+                    value=float(s["end_value"] or 0.0), key=f"ps_ev_{i}", format="%g",
+                    label_visibility="collapsed",
+                )
+                s["loop_to"] = None
+                s["loop_until"] = []
 
-            # loop: jump back to an earlier step + repeat count (in the row)
-            loop_opts = [None] + list(range(i))
-            _cur = s.get("loop_to")
-            _cur = _cur if _cur in loop_opts else None
-            s["loop_to"] = cols[5].selectbox(
-                "Loop back to", loop_opts, index=loop_opts.index(_cur),
-                format_func=lambda v: "— no loop —" if v is None else f"Step {v + 1}",
-                key=f"ps_{i}_loopto", label_visibility="collapsed",
-                help="After this step, jump back to the chosen earlier step and "
-                     "repeat the block (total times set in ×N).",
-            )
-            s["loop_count"] = cols[6].number_input(
-                "×N", min_value=1, max_value=100,
-                value=int(s.get("loop_count", 2) or 2),
-                key=f"ps_{i}_loopn", label_visibility="collapsed",
-                help="Total number of times the loop block runs (1 = no loop).",
-            )
-
-            if cols[7].button("+", key=f"ps_plus_{i}",
+            if cols[5].button("+", key=f"ps_plus_{i}",
                               help="Extra end conditions & loop exit"):
                 s["show_extra"] = not s.get("show_extra", False)
-            if cols[8].button("✕", key=f"ps_rm_{i}", on_click=_remove_step,
+            if cols[6].button("✕", key=f"ps_rm_{i}", on_click=_remove_step,
                               args=(i,)):
                 pass
 
             if s.get("show_extra"):
-                with st.expander(f"Step {i + 1} — extra conditions & loop exit",
-                                 expanded=True):
-                    st.markdown("**Extra end conditions** (OR-ed with the main one)")
-                    _render_cond_list(s, "extra", f"ps{i}")
-                    if s.get("loop_to") is not None:
+                if s["kind"] == "loop":
+                    with st.expander(f"Step {i + 1} — loop exit condition",
+                                     expanded=True):
                         st.markdown("**Loop exit condition** (post-hoc; stops the "
                                     "loop early — first to fire wins)")
                         _render_cond_list(s, "loop_until", f"ps{i}lu")
+                else:
+                    with st.expander(f"Step {i + 1} — extra conditions",
+                                     expanded=True):
+                        st.markdown("**Extra end conditions** (OR-ed with the main one)")
+                        _render_cond_list(s, "extra", f"ps{i}")
 
         st.button("+ Add step", on_click=_add_step)
         st.caption(
-            "Steps repeat for every cycle. **Loop**: pick an earlier step in "
-            "'Loop back to' and set ×N (total times the block runs; 1 = no "
-            "loop). The last ✕ is disabled to keep ≥1 step."
+            "**Loop**: add a step and set its Type to **loop** — it jumps back "
+            "to the chosen earlier step and repeats that block ×N times (1 = no "
+            "loop). Loop rows are never solved themselves. Add a loop targeting "
+            "step 1 to cycle the whole protocol."
         )
 
-        c1, c2, c3 = st.columns(3)
-        _cycles = c1.number_input("Cycles", 1, 1000, int(_cycles), 1, key="pc_cycles")
-        _period = c2.text_input(
+        _period = st.text_input(
             "Output period", value=_period, key="pc_period",
             help="e.g. '10 seconds' / '1 minute'; blank = auto.",
         )
-        _termination = c3.text_input(
-            "Termination", value=_termination, key="pc_term",
-            help="Comma-separated, e.g. '80% capacity' / '4.25 V' (capacity / "
-                 "voltage / time only).",
-        )
-        t1, t2, t3 = st.columns(3)
-        _temperature = t1.number_input(
-            "Experiment T (K)", 0.0, 400.0, _temperature, 0.5, key="pc_temp",
-            help="0 = use the model's initial temperature.",
-        )
-        _t_stop = t2.number_input(
-            "Stop run at T (°C)", 0.0, 200.0, _t_stop, 1.0, key="pc_tstop",
-            help="Run-level safety stop when the cell temperature reaches this "
-                 "value (post-hoc — PyBaMM can't terminate on temperature).",
-        )
-        _t_src = t3.selectbox(
-            "Temperature source", ["volume_averaged", "hot_spot"],
-            index=0 if _t_src == "volume_averaged" else 1, key="pc_tsrc",
-            help="Volume-averaged (works in every model) or hot-spot = max over "
-                 "the 2+1D y-z field (needs 2+1D `x-lumped`).",
-        )
 
-        for i, s in enumerate(steps):
-            terms = []
-            p = _primary_condition(s)
-            if p:
-                terms.append(p)
-            terms += [dict(c) for c in s.get("extra", []) if c.get("type")]
-            custom_steps.append(Step(
-                kind=s["kind"],
-                c_rate=s["value"] if s["kind"] in ("discharge", "charge")
-                       and s["value_mode"] == "c_rate" else None,
-                current_A=s["value"] if s["kind"] in ("discharge", "charge")
-                          and s["value_mode"] == "current_A" else None,
-                power_W=s["value"] if s["kind"] in ("discharge", "charge")
-                        and s["value_mode"] == "power_W" else None,
-                hold_voltage_V=s["hold_v"] if s["kind"] == "hold" else None,
-                terminations=terms,
-                loop_to=s.get("loop_to"),
-                loop_count=int(s.get("loop_count", 1) or 1),
-                loop_until=[dict(c) for c in s.get("loop_until", []) if c.get("type")],
-            ))
+        # ---- run-level conditions (termination / boundary) ----------------
+        st.markdown("#### Run conditions (termination / boundary)")
+        st.caption(
+            "Conditions that set the environment or stop the whole run. "
+            "Temperature / current / capacity-Ah are checked at step ends "
+            "(post-hoc); voltage / capacity-% / time also stop the solver "
+            "cleanly. First to fire wins."
+        )
+        st.selectbox(
+            "Default temperature source",
+            ["volume_averaged", "hot_spot"],
+            index=0 if st.session_state.get("pc_default_src", "volume_averaged")
+                       == "volume_averaged" else 1,
+            key="pc_default_src",
+            help="Used by per-step temperature conditions (each cell-temperature "
+                 "limit below can override). Hot-spot = max over the 2+1D y-z "
+                 "field (needs 2+1D `x-lumped`).",
+        )
+        run_conds = st.session_state.proto_run_conditions
+        _render_run_conditions(run_conds, "pcrc")
+
+        custom_steps = [_step_from_ui(s) for s in steps]
 
     # ------------------------------------------------------------------ common options
     st.markdown("#### Maps & output")
@@ -428,15 +637,15 @@ with common.page_body():
     new_proto = Protocol(
         type=p_type_id,
         steps=custom_steps,
-        cycles=int(_cycles) if p_type_id == "custom" else 1,
+        cycles=1,
         period=(_period.strip() or None) if p_type_id == "custom" else None,
-        termination=([t.strip() for t in _termination.split(",") if t.strip()]
-                     if p_type_id == "custom" else []),
-        temperature_K=(_temperature if p_type_id == "custom" and _temperature > 0 else None),
         thermal_maps=bool(thermal_maps),
         step_map_mode=step_map_mode,
-        temperature_stop=(_t_stop + 273.15) if p_type_id == "custom" and _t_stop > 0 else None,
-        temperature_source=_t_src if p_type_id == "custom" else "volume_averaged",
+        default_temperature_source=(
+            st.session_state.get("pc_default_src", "volume_averaged")
+            if p_type_id == "custom" else "volume_averaged"),
+        run_conditions=([dict(c) for c in run_conds if c.get("type")]
+                        if p_type_id == "custom" else []),
     )
     st.session_state.protocol = new_proto
 
@@ -463,17 +672,15 @@ with common.page_body():
         try:
             flat, _infos = new_proto.expand()
             cyc = new_proto.experiment_cycles(
-                spec.capacity_Ah, new_proto.temperature_source
+                spec.capacity_Ah, new_proto.default_temperature_source
             )
             st.session_state["proto_preview"] = {
                 "steps": [f"{j + 1}. {s.to_string(spec.capacity_Ah)}"
                           for j, s in enumerate(flat)],
                 "n_cycles": len(cyc),
-                "temperature_K": new_proto.temperature_K,
-                "termination": new_proto.termination,
                 "period": new_proto.period,
-                "temperature_stop": new_proto.temperature_stop,
-                "temperature_source": new_proto.temperature_source,
+                "n_conditions": len(new_proto.run_conditions),
+                "default_temperature_source": new_proto.default_temperature_source,
             }
             st.session_state.pop("proto_preview_error", None)
         except Exception as err:  # noqa: BLE001
@@ -488,8 +695,8 @@ with common.page_body():
         st.code("\n".join(preview["steps"]))
         st.caption(
             f"{preview['n_cycles']} cycle(s) · period={preview['period']} · "
-            f"T={preview['temperature_K']} K · termination={preview['termination']} · "
-            f"stop@T={preview['temperature_stop']} K · src={preview['temperature_source']}"
+            f"{preview['n_conditions']} run condition(s) · "
+            f"src={preview['default_temperature_source']}"
         )
 
     # keep the legacy C-rate/duration in sync so the Results/History summary reads well
