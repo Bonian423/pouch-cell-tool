@@ -93,7 +93,6 @@ with common.page_body():
             reg.update({_k: _geo.get(_k) for _k in _GEO_KEYS if _k in _geo})
             reg["geo_preset"] = chosen
             reg["_reset_geo"] = True
-            st.rerun()
 
         def _mark_geo_custom(i: int) -> None:
             spec.cooling_regions[i]["geo_preset"] = None
@@ -113,7 +112,6 @@ with common.page_body():
             else:
                 reg["cool_method"] = None
             reg["_reset_cool"] = True
-            st.rerun()
 
         def _mark_cool_custom(i: int) -> None:
             spec.cooling_regions[i]["cool_method"] = None

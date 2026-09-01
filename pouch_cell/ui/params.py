@@ -225,6 +225,22 @@ PREVIEW_MESH = {"x_n": 4, "x_s": 4, "x_p": 4, "r_n": 1, "r_p": 1, "y": 8, "z": 1
 def _friendly_preview_error(err) -> str:
     """Turn a raw PyBaMM exception into an actionable one-liner."""
     msg = repr(err)
+    if "EmptySolution" in msg or "not subscriptable" in msg:
+        return (
+            "The solver returned an empty solution — the preview step is "
+            "infeasible from the current initial state (e.g. charging from a "
+            "nearly-full or degenerate state, or an override pushing the OCP "
+            "out of range). Lower the C-rate, adjust the Initial SOC / "
+            "voltage, or reset the parameter overrides."
+        )
+    if (("infeasible" in msg and "exceeded bounds at initial conditions" in msg)
+            or "skip_ok is True" in msg):
+        return (
+            "The protocol steps are infeasible from the initial state — the "
+            "start voltage/SOC is inconsistent with the step directions and "
+            "cut-offs. Lower the C-rate, adjust the Initial SOC / initial "
+            "voltage, or reset the parameter overrides."
+        )
     if "Parameter" in msg and "not found" in msg:
         return (
             "This parameter set isn't a full lithium-ion cell set "
@@ -358,6 +374,17 @@ def quick_thermal_preview(
         else:
             sol = sim.discharge(C_rate=config.C_rate, duration_s=5.0)
             note = "fresh 5 s discharge"
+        if isinstance(sol, pybamm.EmptySolution) or getattr(sol, "is_empty", False):
+            return {"ok": False, "figure": None,
+                    "error": (
+                        "The solver returned an empty solution — the preview "
+                        "step is infeasible from the current initial state "
+                        "(e.g. charging from a nearly-full or degenerate "
+                        "state, or an override pushing the OCP out of range). "
+                        "Lower the C-rate, adjust the Initial SOC / voltage, or "
+                        "reset the parameter overrides."
+                    ),
+                    "metrics": {}, "note": note, "warning": None}
         metrics = collect_metrics(sim, sol, config)
         warning = _preview_voltage_warning(sol, spec)
         fig = plotting.plot_tab_heating(sol, spec, param=sim.param)
