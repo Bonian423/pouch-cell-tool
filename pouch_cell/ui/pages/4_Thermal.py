@@ -182,7 +182,7 @@ with common.page_body():
                 c1c, c2c = st.columns(2)
                 r["h_patch"] = c1c.number_input(
                     "Patch h (W/m²/K)", 0.0, 100000.0,
-                    float(r.get("h_patch", 500.0)), 50.0, key=f"t_cg_{i}_h",
+                    float(r.get("h_patch", 500.0)), 50.0, key=f"t_cg_{i}_hp",
                 )
                 r["T_patch"] = c2c.number_input(
                     "Patch temperature (K)", 250.0, 350.0,

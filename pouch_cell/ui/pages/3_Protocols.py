@@ -24,7 +24,7 @@ with common.page_body():
     proto = st.session_state.protocol
     spec = st.session_state.spec
 
-KINDS = ["discharge", "charge", "rest", "hold", "loop"]
+    KINDS = ["discharge", "charge", "rest", "hold", "loop"]
     COND_OPTIONS = {
         "discharge": ["Duration (s)", "Cut-off voltage (V)", "Current (A)",
                       "Temperature (°C)", "Capacity"],
