@@ -426,10 +426,15 @@ def main(argv=None) -> int:
         return 0
     except Exception as err:  # noqa: BLE001 - report any failure to the UI
         stop.set()
-        _write_progress(outdir, status="error", error=repr(err))
+        from ..core.errors import friendly_solver_error
+
+        friendly = friendly_solver_error(err)
+        _write_progress(outdir, status="error", error=friendly)
         (outdir / "result.json").write_text(
             json.dumps(
-                {"error": repr(err), "traceback": traceback.format_exc()}
+                {"error": friendly, "raw_error": repr(err),
+                 "traceback": traceback.format_exc()},
+                default=str,
             ),
             encoding="utf-8",
         )
