@@ -69,21 +69,24 @@ with common.page_body():
     st.markdown("## 3 · Thermal")
     st.markdown(
         """
-    - **Cooling presets** map to a uniform surface heat-transfer coefficient
-      (W/m²/K):
-    """
-    )
-    for name, h in registry.COOLING_PRESETS.items():
-        st.markdown(f"  - `{name}` → **{h} W/m²/K**")
-    st.markdown(
-        """
+    - **Ambient temperature (K)** sets the environment temperature for the
+      whole cell.
+    - **Cooling is region-based** — each cooling region carries its own
+      **cooling method** that fills its heat-transfer coefficient (and, where
+      the method has one, a patch temperature):
+      - `natural` → h = 5 W/m²/K (ambient temperature)
+      - `forced_air` → h = 50 W/m²/K (ambient temperature)
+      - `liquid_cold_plate` → h = 500 W/m²/K, patch T = 288.15 K
+      The rest of the face uses natural convection (h = 5 W/m²/K).
     - **Custom cooling geometry** — localised regions on the pouch face,
       applied in 2+1D `x-lumped` solves, in two categories:
       - **2D surface patch** — a rect / ellipse on the large faces (both
-        faces), with a per-patch h and temperature.
+        faces).
       - **Pseudo-1D edge patch** — a band along one edge (top / bottom /
         left / right) with an adjustable **along**-length and **band depth**.
-      The **top-edge band** preset reproduces the old heat pipe. In the
+      Each region also has a **geometry preset** (`top-edge band` /
+      `whole-face` / `patch`) that fills its shape and size from the cell
+      dimensions — the **top-edge band** reproduces the old heat pipe. In the
       right-panel illustration both categories are drawn the same blue
       ("cooling area"); the Thermal editor keeps surface = blue / edge =
       green so you can tell them apart while editing.

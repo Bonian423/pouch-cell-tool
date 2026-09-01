@@ -143,44 +143,43 @@ def region_overrides(spec, regions, h_base: float, T_base: float) -> dict:
 
 
 # -- preset gallery -------------------------------------------------------- #
-PRESET_NAMES = ("top-edge band (heat pipe)", "whole-face cold plate",
-                "centre patch", "corner patch")
+PRESET_NAMES = ("top-edge band", "whole-face", "patch")
 
 
 def preset_regions(name: str, spec) -> list[dict]:
     """Named cooling-geometry presets (each a ready-to-edit region list).
 
-    ``"top-edge band (heat pipe)"`` reproduces the old top-edge heat pipe as a
-    pseudo-1D edge band.
+    Geometry is always derived from the cell dimensions (``spec.width`` /
+    ``spec.height``) — never hard-coded cm values.  ``"top-edge band"``
+    reproduces the old top-edge heat pipe as a pseudo-1D edge band.  The
+    presets carry a default ``h_patch`` / ``T_patch`` so legacy callers
+    (``heat_pipe_overrides``, notebooks) keep working; the UI applies a
+    geometry preset for its geometry only and lets the cooling-method preset
+    set h/T.
     """
     key = str(name).strip().lower()
     w = float(getattr(spec, "width", 0.1))
     h = float(getattr(spec, "height", 0.15))
-    if key in ("top-edge band (heat pipe)", "top-edge band", "heat pipe",
-               "heat_pipe", "heatpipe", "top_edge_band"):
+    if key in ("top-edge band", "top-edge", "top_edge_band", "top edge band",
+               "heat pipe", "heat_pipe", "heatpipe"):
         band = 0.005  # 0.5 cm band below the top edge (old heat_pipe_height)
         return [{
             "category": "edge", "edge": "top",
             "along_start": 0.0, "along_end": w, "depth": band,
             "h_patch": 2000.0, "T_patch": 288.15,
         }]
-    if key in ("whole-face cold plate", "whole-face", "whole_face",
+    if key in ("whole-face", "whole face", "whole_face",
+               "whole-face cold plate", "whole face cold plate",
                "cold plate", "cold_plate"):
         return [{
             "category": "surface", "shape": "rect",
             "y0": w / 2.0, "z0": h / 2.0, "w": w, "h": h,
             "h_patch": 500.0, "T_patch": 288.15,
         }]
-    if key in ("centre patch", "centre", "center", "centre patch (ellipse)"):
+    if key in ("patch", "centre patch", "center patch", "centre", "center"):
         return [{
             "category": "surface", "shape": "ellipse",
             "y0": w / 2.0, "z0": h / 2.0, "r": min(w, h) * 0.2,
-            "h_patch": 500.0, "T_patch": 288.15,
-        }]
-    if key in ("corner patch", "corner"):
-        return [{
-            "category": "surface", "shape": "rect",
-            "y0": 0.02, "z0": 0.02, "w": 0.04, "h": 0.04,
             "h_patch": 500.0, "T_patch": 288.15,
         }]
     raise ValueError(f"Unknown cooling-geometry preset '{name}'.")

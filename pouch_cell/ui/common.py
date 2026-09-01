@@ -158,7 +158,9 @@ def apply_config(cfg: RunConfig) -> None:
     st.session_state.pop("preset_error", None)
     st.session_state.config = cfg
     st.session_state.spec = cfg.spec()
-    st.session_state.thermal = ThermalConfig(cooling=cfg.cooling)
+    # uniform cooling presets are no longer used by the UI (cooling is
+    # region-based); don't re-seed them from a saved config
+    st.session_state.thermal = ThermalConfig()
     if cfg.protocol:
         st.session_state.protocol = Protocol.from_dict(cfg.protocol)
     s = st.session_state.spec
