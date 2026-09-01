@@ -604,17 +604,18 @@ with common.page_body():
             "(post-hoc); voltage / capacity-% / time also stop the solver "
             "cleanly. First to fire wins."
         )
-        st.selectbox(
-            "Default temperature source",
-            ["volume_averaged", "hot_spot"],
-            index=0 if st.session_state.get("pc_default_src", "volume_averaged")
-                       == "volume_averaged" else 1,
-            key="pc_default_src",
-            help="Used by per-step temperature conditions (each cell-temperature "
-                 "limit below can override). Hot-spot = max over the 2+1D y-z "
-                 "field (needs 2+1D `x-lumped`).",
-        )
         run_conds = st.session_state.proto_run_conditions
+        if any((c or {}).get("type") == "temp_limit" for c in run_conds):
+            st.selectbox(
+                "Default temperature source",
+                ["volume_averaged", "hot_spot"],
+                index=0 if st.session_state.get("pc_default_src", "volume_averaged")
+                           == "volume_averaged" else 1,
+                key="pc_default_src",
+                help="Used by per-step temperature conditions (each cell-temperature "
+                     "limit below can override). Hot-spot = max over the 2+1D y-z "
+                     "field (needs 2+1D `x-lumped`).",
+            )
         _render_run_conditions(run_conds, "pcrc")
 
         custom_steps = [_step_from_ui(s) for s in steps]
