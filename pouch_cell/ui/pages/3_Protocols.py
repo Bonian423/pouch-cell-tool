@@ -33,7 +33,8 @@ with common.page_body():
         "hold": ["Duration (s)", "Current (A)", "Temperature (°C)"],
     }
     COND_TYPE_NAMES = ["voltage", "current", "temperature", "capacity"]
-    _COL_SPEC = [1.0, 1.1, 1.0, 1.1, 1.05, 0.62]
+    # Kind | Input mode | Value | Until | End value | Loop back to | ×N | + | ✕
+    _COL_SPEC = [1.0, 1.0, 0.95, 1.0, 0.95, 1.0, 0.65, 0.55, 0.45]
 
     # ------------------------------------------------------------------ helpers
     def _default_step() -> dict:
@@ -265,7 +266,12 @@ with common.page_body():
         hdr[2].markdown("**Value**")
         hdr[3].markdown("**Until**", help="First end condition to fire stops the step")
         hdr[4].markdown("**End value**")
-        hdr[5].markdown("")
+        hdr[5].markdown("**Loop back to**",
+                        help="After this step, jump back to an earlier step and "
+                             "repeat the block ×N times.")
+        hdr[6].markdown("**×N**")
+        hdr[7].markdown("")
+        hdr[8].markdown("")
 
         for i, s in enumerate(steps):
             cols = st.columns(_COL_SPEC)
@@ -313,42 +319,47 @@ with common.page_body():
                 label_visibility="collapsed",
             )
 
-            if cols[5].button("+", key=f"ps_plus_{i}", help="Extra conditions & loop"):
+            # loop: jump back to an earlier step + repeat count (in the row)
+            loop_opts = [None] + list(range(i))
+            _cur = s.get("loop_to")
+            _cur = _cur if _cur in loop_opts else None
+            s["loop_to"] = cols[5].selectbox(
+                "Loop back to", loop_opts, index=loop_opts.index(_cur),
+                format_func=lambda v: "— no loop —" if v is None else f"Step {v + 1}",
+                key=f"ps_{i}_loopto", label_visibility="collapsed",
+                help="After this step, jump back to the chosen earlier step and "
+                     "repeat the block (total times set in ×N).",
+            )
+            s["loop_count"] = cols[6].number_input(
+                "×N", min_value=1, max_value=100,
+                value=int(s.get("loop_count", 2) or 2),
+                key=f"ps_{i}_loopn", label_visibility="collapsed",
+                help="Total number of times the loop block runs (1 = no loop).",
+            )
+
+            if cols[7].button("+", key=f"ps_plus_{i}",
+                              help="Extra end conditions & loop exit"):
                 s["show_extra"] = not s.get("show_extra", False)
-            if cols[5].button("✕", key=f"ps_rm_{i}", on_click=_remove_step, args=(i,)):
+            if cols[8].button("✕", key=f"ps_rm_{i}", on_click=_remove_step,
+                              args=(i,)):
                 pass
 
             if s.get("show_extra"):
-                with st.expander(f"Step {i + 1} — extra conditions & loop",
+                with st.expander(f"Step {i + 1} — extra conditions & loop exit",
                                  expanded=True):
                     st.markdown("**Extra end conditions** (OR-ed with the main one)")
                     _render_cond_list(s, "extra", f"ps{i}")
-                    st.markdown("**Loop** — jump back to an earlier step")
-                    l1, l2 = st.columns(2)
-                    loop_opts = [("— no loop —", None)] + [
-                        (f"Step {j + 1}", j) for j in range(i)
-                    ]
-                    cur = s.get("loop_to")
-                    idx = next((k for k, (_, v) in enumerate(loop_opts)
-                                if v == cur), 0)
-                    s["loop_to"] = l1.selectbox(
-                        "Loop back to", [o[0] for o in loop_opts], index=idx,
-                        key=f"ps_{i}_loopto",
-                        help="After this step, jump back to the chosen earlier "
-                             "step and repeat the block.",
-                    )
-                    s["loop_count"] = l2.number_input(
-                        "Repeat block ×", 1, 100, int(s.get("loop_count", 2) or 2),
-                        key=f"ps_{i}_loopn",
-                        help="Total number of times the loop block runs.",
-                    )
-                    st.markdown("**Loop exit condition** (post-hoc; stops the loop "
-                                "early — first to fire wins)")
-                    _render_cond_list(s, "loop_until", f"ps{i}lu")
+                    if s.get("loop_to") is not None:
+                        st.markdown("**Loop exit condition** (post-hoc; stops the "
+                                    "loop early — first to fire wins)")
+                        _render_cond_list(s, "loop_until", f"ps{i}lu")
 
         st.button("+ Add step", on_click=_add_step)
-        st.caption("Steps repeat for every cycle. Loop targets must be earlier steps; "
-                   "the last ✕ is disabled to keep ≥1 step.")
+        st.caption(
+            "Steps repeat for every cycle. **Loop**: pick an earlier step in "
+            "'Loop back to' and set ×N (total times the block runs; 1 = no "
+            "loop). The last ✕ is disabled to keep ≥1 step."
+        )
 
         c1, c2, c3 = st.columns(3)
         _cycles = c1.number_input("Cycles", 1, 1000, int(_cycles), 1, key="pc_cycles")
@@ -464,9 +475,13 @@ with common.page_body():
                 "temperature_stop": new_proto.temperature_stop,
                 "temperature_source": new_proto.temperature_source,
             }
+            st.session_state.pop("proto_preview_error", None)
         except Exception as err:  # noqa: BLE001
             st.session_state["proto_preview_error"] = repr(err)
             st.session_state.pop("proto_preview", None)
+    _preview_err = st.session_state.get("proto_preview_error")
+    if _preview_err:
+        st.error(f"Couldn't build the protocol preview: `{_preview_err}`")
     preview = st.session_state.get("proto_preview")
     if preview:
         st.markdown("**Parsed steps (one cycle, loops unrolled)**")

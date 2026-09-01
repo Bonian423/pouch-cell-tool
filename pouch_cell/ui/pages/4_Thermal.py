@@ -7,7 +7,11 @@ import json
 import streamlit as st
 
 from pouch_cell import registry
-from pouch_cell.thermal.cooling_geometry import PRESET_NAMES, preset_regions
+from pouch_cell.thermal.cooling_geometry import (
+    PRESET_NAMES,
+    preset_regions,
+    region_category,
+)
 from pouch_cell.ui import common
 from pouch_cell.ui.params import (
     CURATED_THERMAL_PARAMS,
@@ -77,11 +81,12 @@ with common.page_body():
         )
     else:
         st.caption(
-            "Define **localised cold-plate patches** on the pouch face (applied "
-            "to **both** large faces in 2+1D `x-lumped` solves). **Presets** "
-            "pre-fill ready-to-edit regions — the **top-edge band** is the old "
-            "heat pipe. Blue = face patch, green = edge band (shown on the "
-            "thermal maps)."
+            "Define cooling regions in **two categories**: a **2D surface "
+            "patch** (rect/ellipse on the large faces, applied to **both**) "
+            "or a **pseudo-1D edge patch** (a band along one cell edge, "
+            "perimeter cooling). **Presets** pre-fill ready-to-edit regions "
+            "— the **top-edge band** is the old heat pipe. Blue = surface "
+            "patch, green = edge band (shown on the thermal maps)."
         )
         if not spec.cooling_regions:
             st.caption("No cooling regions defined yet — pick a preset or add one.")
@@ -91,56 +96,89 @@ with common.page_body():
                 spec.cooling_regions = preset_regions(pname, spec)
                 st.rerun()
         for i, r in enumerate(spec.cooling_regions):
-            with st.expander(
-                f"Region {i + 1} — {r.get('shape', 'rect')} "
-                f"({r.get('target', 'face')})",
-                expanded=True,
-            ):
-                c1, c2, c3 = st.columns(3)
-                r["shape"] = c1.selectbox(
-                    "Shape", ["rect", "ellipse"],
-                    index=0 if r.get("shape", "rect") == "rect" else 1,
-                    key=f"t_cg_{i}_shape",
+            _cat = region_category(r)
+            _cat_label = ("2D surface patch" if _cat == "surface"
+                          else "Pseudo-1D edge patch")
+            with st.expander(f"Region {i + 1} — {_cat_label}", expanded=True):
+                c1, c2 = st.columns(2)
+                _cat = c1.selectbox(
+                    "Category",
+                    ["2D surface patch", "Pseudo-1D edge patch"],
+                    index=0 if _cat == "surface" else 1,
+                    key=f"t_cg_{i}_cat",
+                    help="2D surface patch = rect/ellipse on the large faces "
+                         "(both faces). Pseudo-1D edge patch = a band along "
+                         "one cell edge (perimeter cooling).",
                 )
-                r["target"] = c2.selectbox(
-                    "Applies to", ["face", "edge"],
-                    index=0 if r.get("target", "face") == "face" else 1,
-                    key=f"t_cg_{i}_target",
-                    help="face = current-collector surface (both large faces); "
-                         "edge = pouch perimeter (e.g. the heat-pipe band).",
-                )
-                c3.caption(
-                    "Centre (y0, z0) in cm: y across width, z up the height, "
-                    "tabs at the top."
-                )
-                c1b, c2b, c3b = st.columns(3)
-                r["y0"] = c1b.number_input(
-                    "y0 (cm)", 0.0, 50.0, float(r.get("y0", 0.05)) * 100.0,
-                    0.5, key=f"t_cg_{i}_y0",
-                ) / 100.0
-                r["z0"] = c2b.number_input(
-                    "z0 (cm)", 0.0, 50.0, float(r.get("z0", 0.05)) * 100.0,
-                    0.5, key=f"t_cg_{i}_z0",
-                ) / 100.0
-                if r.get("shape") == "ellipse":
-                    r["r"] = c3b.number_input(
-                        "radius (cm)", 0.1, 50.0,
-                        float(r.get("r", 0.01)) * 100.0, 0.5,
-                        key=f"t_cg_{i}_r",
+                r["category"] = "surface" if _cat == "2D surface patch" else "edge"
+                r.pop("target", None)
+                if r["category"] == "surface":
+                    c2.caption("Applied to BOTH large faces.")
+                    c1b, c2b, c3b = st.columns(3)
+                    r["shape"] = c1b.selectbox(
+                        "Shape", ["rect", "ellipse"],
+                        index=0 if r.get("shape", "rect") == "rect" else 1,
+                        key=f"t_cg_{i}_shape",
+                    )
+                    r["y0"] = c2b.number_input(
+                        "y0 (cm)", 0.0, 50.0, float(r.get("y0", 0.05)) * 100.0,
+                        0.5, key=f"t_cg_{i}_y0",
                     ) / 100.0
-                    r.pop("w", None)
-                    r.pop("h", None)
+                    r["z0"] = c3b.number_input(
+                        "z0 (cm)", 0.0, 50.0, float(r.get("z0", 0.05)) * 100.0,
+                        0.5, key=f"t_cg_{i}_z0",
+                    ) / 100.0
+                    if r.get("shape") == "ellipse":
+                        r["r"] = c1b.number_input(
+                            "radius (cm)", 0.1, 50.0,
+                            float(r.get("r", 0.01)) * 100.0, 0.5,
+                            key=f"t_cg_{i}_r",
+                        ) / 100.0
+                        r.pop("w", None)
+                        r.pop("h", None)
+                    else:
+                        r["w"] = c1b.number_input(
+                            "width (cm)", 0.1, 50.0,
+                            float(r.get("w", 0.05)) * 100.0, 0.5,
+                            key=f"t_cg_{i}_w",
+                        ) / 100.0
+                        r["h"] = c2b.number_input(
+                            "height (cm)", 0.1, 50.0,
+                            float(r.get("h", 0.05)) * 100.0, 0.5,
+                            key=f"t_cg_{i}_h",
+                        ) / 100.0
+                        r.pop("r", None)
+                    c2b.caption("centre (y0, z0) in cm: y across width, z up "
+                                "the height, tabs at the top.")
                 else:
-                    r["w"] = c1b.number_input(
-                        "width (cm)", 0.1, 50.0, float(r.get("w", 0.05)) * 100.0,
-                        0.5, key=f"t_cg_{i}_w",
+                    c2.caption("Pseudo-1D band along one cell edge.")
+                    c1b, c2b, c3b = st.columns(3)
+                    _edges = ["top", "bottom", "left", "right"]
+                    _cur_edge = r.get("edge", "top")
+                    _cur_edge = _cur_edge if _cur_edge in _edges else "top"
+                    r["edge"] = c1b.selectbox(
+                        "Edge", _edges, index=_edges.index(_cur_edge),
+                        key=f"t_cg_{i}_edge",
+                    )
+                    r["along_start"] = c2b.number_input(
+                        "Along start (cm)", 0.0, 50.0,
+                        float(r.get("along_start", 0.0)) * 100.0, 0.5,
+                        key=f"t_cg_{i}_astart",
                     ) / 100.0
-                    r["h"] = c2b.number_input(
-                        "height (cm)", 0.1, 50.0, float(r.get("h", 0.05)) * 100.0,
-                        0.5, key=f"t_cg_{i}_h",
+                    r["along_end"] = c3b.number_input(
+                        "Along end (cm)", 0.0, 50.0,
+                        float(r.get("along_end", 0.05)) * 100.0, 0.5,
+                        key=f"t_cg_{i}_aend",
                     ) / 100.0
-                    r.pop("r", None)
-                c3b.caption("")
+                    r["depth"] = c1b.number_input(
+                        "Band depth (cm)", 0.1, 10.0,
+                        float(r.get("depth", 0.005)) * 100.0, 0.1,
+                        key=f"t_cg_{i}_depth",
+                    ) / 100.0
+                    c2b.caption("Along = distance along the edge (0 = corner); "
+                                "depth = band width into the cell.")
+                    for _k in ("shape", "y0", "z0", "w", "h", "r"):
+                        r.pop(_k, None)
                 c1c, c2c = st.columns(2)
                 r["h_patch"] = c1c.number_input(
                     "Patch h (W/m²/K)", 0.0, 100000.0,

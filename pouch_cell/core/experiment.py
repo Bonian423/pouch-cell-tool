@@ -91,10 +91,21 @@ def collect_step_metrics(sol) -> list[dict]:
             row = {"cycle": ci + 1, "step": si + 1, "t_end_s": float("nan"),
                    "V_end": float("nan"), "Ah": float("nan"),
                    "I_end_A": float("nan"), "T_end_K": float("nan"),
-                   "T_end_volav_K": float("nan"), "T_end_hotspot_K": float("nan")}
+                   "T_end_volav_K": float("nan"), "T_end_hotspot_K": float("nan"),
+                   "solve_s": float("nan")}
             if isinstance(step, pybamm.EmptySolution) or step is None:
                 rows.append(row)
                 continue
+            try:
+                _st = getattr(step, "solve_time", None)
+                if _st is not None:
+                    # pybamm wraps solve wall-time in a TimerTime whose .value
+                    # is the seconds float (float(TimerTime) raises)
+                    if hasattr(_st, "value"):
+                        _st = _st.value
+                    row["solve_s"] = round(float(_st), 6)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 tt = np.asarray(step.t)
                 row["t_end_s"] = float(tt[-1]) if len(tt) else float("nan")
@@ -213,15 +224,21 @@ def run_protocol(
     callbacks: list | None = None,
 ):
     """Run a multi-step :class:`Protocol` and return ``(sim, sol, metrics)``."""
+    import time
+
+    _t0 = time.time()
     model, dim, thermal, mesh = _resolve_protocol_model(config, proto)
     sim = _build_simulation(spec, config, model, dim, thermal, mesh)
+    _t_build = time.time() - _t0
     experiment = pybamm.Experiment(
         proto.experiment_cycles(spec.capacity_Ah, proto.temperature_source),
         period=proto.period,
         temperature=proto.temperature_K,
         termination=proto.termination or None,
     )
+    _t0 = time.time()
     sol = sim.run_experiment_obj(experiment, callbacks=callbacks)
+    _t_solve = time.time() - _t0
     metrics = collect_metrics(sim, sol, config)
     # report the *actually resolved* model/dim/thermal/mesh (the protocol may
     # have forced SPM 2+1D x-lumped for thermal maps)
@@ -232,6 +249,8 @@ def run_protocol(
     metrics["analysis"] = "protocol"
     metrics["protocol_type"] = proto.type
     metrics["steps"] = collect_step_metrics(sol)
+    metrics["timeline"] = {"build_s": round(_t_build, 3),
+                           "solve_s": round(_t_solve, 3)}
     # post-hoc temperature / loop-until stop (PyBaMM can't do these at runtime)
     stop = _posthoc_stop(proto, sol, spec, proto.temperature_source)
     if stop:

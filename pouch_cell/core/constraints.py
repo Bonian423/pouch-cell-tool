@@ -208,7 +208,10 @@ def protocol_violations(proto, cfg) -> list[Violation]:
 
     for i, s in enumerate(steps):
         conds = list(getattr(s, "terminations", None) or [])
-        if not conds:
+        # a loop marker has no end condition by design — it is consumed during
+        # loop unrolling and never solved as a real step
+        is_loop_marker = s.loop_to is not None and isinstance(s.loop_to, int)
+        if not conds and not is_loop_marker:
             vios.append(Violation(
                 "blocked",
                 f"Step {i + 1} has no end condition — add a duration or cut-off.",

@@ -208,9 +208,3 @@ with common.page_body():
                 st.success(f"All {len(_names)} output variable(s) resolve.")
 
     st.divider()
-    st.markdown("**Summary**")
-    st.code(
-        f"{cfg.model_name} dim={cfg.dimensionality} thermal={cfg.thermal} · "
-        f"mesh={cfg.mesh} · param_set={cfg.parameter_set} · SOC={cfg.initial_soc} · "
-        f"solver={cfg.solver}"
-    )

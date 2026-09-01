@@ -314,8 +314,10 @@ def main(argv=None) -> int:
         spec = PouchCellSpec.from_dict(spec_dict)
         config = RunConfig(**cfg_dict)
         config.validate()
+        t_load = time.time() - t0
 
         _write_progress(outdir, status="running", stage="building model")
+        _t_preview = None
         if config.analysis == "tab":
             from ..core.analysis import tab_heating_analysis
             from ..core.solvers import make_solver
@@ -342,13 +344,16 @@ def main(argv=None) -> int:
 
                 proto = Protocol.from_dict(config.protocol)
                 _write_progress(outdir, status="running", stage="live preview")
+                _tp = time.time()
                 _run_live_preview(outdir, spec, config, proto)
+                _t_preview = time.time() - _tp
             _write_progress(outdir, status="running", stage="solving")
             live_cb = _LiveCallback(outdir)
             sim, sol, metrics = run(
                 config, spec=spec, verbose=False, callbacks=[live_cb]
             )
 
+        _t_post0 = time.time()
         _write_progress(outdir, status="running", stage="post-processing")
         metrics["figures"] = _save_figures(outdir, sim, sol, config, spec, metrics)
         metrics["wall_s"] = round(time.time() - t0, 2)
@@ -362,6 +367,44 @@ def main(argv=None) -> int:
         _proto = _Protocol.from_dict(config.protocol) if config.protocol else None
         metrics["effective_config"] = resolve_effective(config, _proto)
         metrics["warnings"] = payload.get("warnings", [])
+
+        # --- stage-timing timeline + human log.txt (for debugging wall time) --
+        tl = dict(metrics.get("timeline") or {})
+        tl["load_s"] = round(t_load, 3)
+        if _t_preview is not None:
+            tl["preview_s"] = round(_t_preview, 3)
+        tl["post_s"] = round(time.time() - _t_post0, 3)
+        tl["total_s"] = round(metrics["wall_s"], 3)
+        metrics["timeline"] = tl
+        _log_lines = [f"run wall time: {metrics['wall_s']}s"]
+        for _k in ("load_s", "build_s", "preview_s", "solve_s", "post_s",
+                   "total_s"):
+            if tl.get(_k) is not None:
+                _log_lines.append(f"{_k}: {tl[_k]}s")
+        _log_lines.append(
+            f"model: {metrics.get('model')} "
+            f"dim={metrics.get('dimensionality')} "
+            f"thermal={metrics.get('thermal')} mesh={metrics.get('mesh')}"
+        )
+        _log_lines.append(
+            f"final V: {metrics.get('final_V')} V | "
+            f"Tmax: {metrics.get('Tmax_K')} K | Ah: {metrics.get('delivered_Ah')}"
+        )
+        if metrics.get("steps"):
+            _log_lines.append("per-step solve time (s):")
+            for _r in metrics["steps"]:
+                _log_lines.append(
+                    f"  cycle {_r['cycle']} step {_r['step']} "
+                    f"(t={_r.get('t_end_s', '?')}s): "
+                    f"{_r.get('solve_s', float('nan'))}s"
+                )
+        if metrics.get("stopped"):
+            _log_lines.append(
+                f"stopped: {metrics['stopped'].get('message')}"
+            )
+        (outdir / "log.txt").write_text(
+            "\n".join(_log_lines), encoding="utf-8"
+        )
 
         stop.set()
         (outdir / "result.json").write_text(

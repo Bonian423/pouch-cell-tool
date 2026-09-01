@@ -142,11 +142,35 @@ with common.page_body():
                     "cycle": r["cycle"], "step": r["step"],
                     "t_end_s": r["t_end_s"], "V_end": r["V_end"], "Ah": r["Ah"],
                     "T_end_K": r.get("T_end_K", float("nan")),
+                    "solve_s": r.get("solve_s", float("nan")),
                 }
                 for r in steps
             ],
             width="stretch", hide_index=True,
         )
+        st.caption("`solve_s` = wall time spent solving that step (seconds).")
+
+    # ------------------------------------------------------------------ run log & timing
+    _tl = last.get("timeline") or {}
+    if _tl:
+        with st.expander("Run log & timing", expanded=False):
+            rows = [
+                {"stage": "load config", "seconds": _tl.get("load_s")},
+                {"stage": "model / mesh build", "seconds": _tl.get("build_s")},
+                {"stage": "live preview", "seconds": _tl.get("preview_s")},
+                {"stage": "solve", "seconds": _tl.get("solve_s")},
+                {"stage": "post-processing & figures", "seconds": _tl.get("post_s")},
+                {"stage": "total", "seconds": _tl.get("total_s")},
+            ]
+            rows = [r for r in rows if r["seconds"] is not None]
+            st.dataframe(rows, width="stretch", hide_index=True)
+            _log = Path(last["run_dir"]) / "log.txt"
+            if _log.is_file():
+                st.download_button(
+                    "Download log.txt",
+                    data=_log.read_text(encoding="utf-8"),
+                    file_name="log.txt", mime="text/plain",
+                )
 
     # ------------------------------------------------------------------ figures
     st.markdown("#### Figures")

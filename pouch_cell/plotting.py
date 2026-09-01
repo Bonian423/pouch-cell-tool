@@ -180,31 +180,45 @@ def draw_cooling_regions(ax, spec) -> None:
     """Overlay the user's 2D cooling geometry as translucent patches.
 
     Same cm convention as the maps (y = width on x, z = height on y, tabs at
-    the top).  Face patches are drawn blue, edge patches (heat-pipe band)
-    green, both with dashed outlines.
+    the top).  Surface patches are drawn blue, edge bands green, both with
+    dashed outlines.
     """
     from matplotlib.patches import Ellipse, Rectangle
 
+    from .thermal.cooling_geometry import region_category
+
     regions = list(getattr(spec, "cooling_regions", None) or [])
+    w_cm = float(spec.width) * 100.0
+    h_cm = float(spec.height) * 100.0
     for r in regions:
+        cat = region_category(r)
+        edgecolor = "#1f77b4" if cat == "surface" else "#2ca02c"
+        fc = dict(facecolor=edgecolor, alpha=0.28, edgecolor=edgecolor,
+                  lw=1.2, ls="--")
+        if cat == "edge" and r.get("edge"):
+            a0 = float(r.get("along_start", 0.0)) * 100.0
+            a1 = float(r.get("along_end", 0.05)) * 100.0
+            d = float(r.get("depth", 0.005)) * 100.0
+            edge = str(r.get("edge"))
+            if edge == "bottom":
+                ax.add_patch(Rectangle((a0, 0.0), a1 - a0, d, **fc))
+            elif edge == "left":
+                ax.add_patch(Rectangle((0.0, a0), d, a1 - a0, **fc))
+            elif edge == "right":
+                ax.add_patch(Rectangle((w_cm - d, a0), d, a1 - a0, **fc))
+            else:  # top
+                ax.add_patch(Rectangle((a0, h_cm - d), a1 - a0, d, **fc))
+            continue
         shape = r.get("shape", "rect")
-        target = r.get("target", "face")
-        edgecolor = "#1f77b4" if target == "face" else "#2ca02c"
         y0 = float(r.get("y0", 0.0)) * 100.0
         z0 = float(r.get("z0", 0.0)) * 100.0
         if shape == "ellipse":
             rad = float(r.get("r", 0.01)) * 100.0
-            ax.add_patch(
-                Ellipse((y0, z0), rad * 2, rad * 2, facecolor=edgecolor,
-                        alpha=0.28, edgecolor=edgecolor, lw=1.2, ls="--")
-            )
+            ax.add_patch(Ellipse((y0, z0), rad * 2, rad * 2, **fc))
         else:
             w = float(r.get("w", 0.05)) * 100.0
             h = float(r.get("h", 0.05)) * 100.0
-            ax.add_patch(
-                Rectangle((y0 - w / 2, z0 - h / 2), w, h, facecolor=edgecolor,
-                          alpha=0.28, edgecolor=edgecolor, lw=1.2, ls="--")
-            )
+            ax.add_patch(Rectangle((y0 - w / 2, z0 - h / 2), w, h, **fc))
 
 
 def plot_2d_map(
@@ -417,7 +431,7 @@ def entries_last_index(sol: pybamm.Solution, t: float | None) -> int:
 # --------------------------------------------------------------------------- #
 # Persistent-panel schematic (plan view of the pouch face)
 # --------------------------------------------------------------------------- #
-def plot_cell_schematic(spec: PouchCellSpec, figsize=(4.4, 4.6)) -> plt.Figure:
+def plot_cell_schematic(spec: PouchCellSpec, figsize=(2.2, 2.3)) -> plt.Figure:
     """Plan-view schematic of the pouch face for the persistent right panel.
 
     Drawn with the same conventions as the thermal maps: y = width on x,

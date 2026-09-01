@@ -12,13 +12,13 @@ st.set_page_config(layout="wide", page_title="Pouch cell tool",
                    initial_sidebar_state="expanded")
 
 _PAGES = [
-    st.Page("pages/1_Model_and_Run.py", title="Model & Run", icon="🔬"),
-    st.Page("pages/2_Design.py", title="Design", icon="📐"),
-    st.Page("pages/3_Protocols.py", title="Protocols", icon="⚙️"),
-    st.Page("pages/4_Thermal.py", title="Thermal & cooling", icon="🌡️"),
-    st.Page("pages/5_Results.py", title="Results", icon="📊"),
-    st.Page("pages/6_History.py", title="Run history", icon="🗂️"),
-    st.Page("pages/7_Help.py", title="Help", icon="❓"),
+    st.Page("pages/1_Model_and_Run.py", title="Model & Run"),
+    st.Page("pages/2_Design.py", title="Design"),
+    st.Page("pages/3_Protocols.py", title="Protocols"),
+    st.Page("pages/4_Thermal.py", title="Thermal & cooling"),
+    st.Page("pages/5_Results.py", title="Results"),
+    st.Page("pages/6_History.py", title="Run history"),
+    st.Page("pages/7_Help.py", title="Help"),
 ]
 
 _nav = st.navigation(_PAGES)

@@ -706,7 +706,17 @@ def render_persistent_panel() -> None:
         from .. import plotting
 
         fig = plotting.plot_cell_schematic(spec)
-        st.pyplot(fig, width="stretch")
+        c_fig, c_leg = st.columns([1.5, 1], vertical_alignment="center")
+        with c_fig:
+            st.pyplot(fig, width="stretch")
+        with c_leg:
+            st.markdown(
+                "**Legend**  \n"
+                "• red = tabs  \n"
+                "• blue = surface cooling patch  \n"
+                "• green = edge cooling band  \n"
+                "• dashed = dimensions"
+            )
         plt.close(fig)
     except Exception:  # noqa: BLE001 - schematic is best-effort
         st.caption("(schematic unavailable)")
@@ -729,6 +739,10 @@ def render_persistent_panel() -> None:
     st.markdown(
         f"**Run:** `{eff['model']}` · dim {eff['dimensionality']} · "
         f"`{eff['thermal']}` · `{eff['mesh']}`"
+    )
+    st.caption(
+        f"Current: param_set `{cfg.parameter_set}` · "
+        f"SOC {cfg.initial_soc:.0%} · solver `{cfg.solver}`"
     )
     stopped = (st.session_state.get("last_result") or {}).get("stopped")
     if stopped:

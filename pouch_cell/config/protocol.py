@@ -358,29 +358,41 @@ class Protocol:
         (used by the post-hoc loop-until evaluation in ``run_protocol``).
         """
         loop_infos: list[dict] = []
-        flat = self._expand_range(0, len(self.steps), False, loop_infos)
-        return flat, loop_infos
+        tagged = self._expand_range(0, len(self.steps), False, loop_infos)
+        return [c for (_i, c) in tagged], loop_infos
 
     def _expand_range(self, start: int, end: int, suppress_last: bool,
                       loop_infos: list) -> list:
-        """Expand ``self.steps[start:end]``; ``suppress_last`` treats a loop
-        marker at ``end-1`` as a plain step (it is a consumed marker)."""
+        """Expand ``self.steps[start:end]``.
+
+        Returns ``(original_index, deepcopy)`` tuples so a loop can trim the
+        already-emitted steps it is about to re-emit: a marker at ``i`` that
+        jumps to ``t`` must output ``steps[start..t-1]`` once and then
+        ``steps[t..i]`` ``count`` times -- never double-counting the prefix.
+        ``suppress_last`` treats a loop marker at ``end-1`` as a plain step
+        (it is a consumed marker).
+        """
         steps = self.steps
-        out: list[Step] = []
+        out: list[tuple[int, Step]] = []
         idx = start
         while idx < end:
             s = steps[idx]
-            is_marker = s.loop_to is not None and 0 <= s.loop_to < idx
+            lt = s.loop_to
+            is_marker = lt is not None and isinstance(lt, int) and 0 <= lt < idx
             is_last = idx == end - 1
             if is_marker and not (suppress_last and is_last):
-                body = self._expand_range(s.loop_to, idx + 1, True, loop_infos)
+                t = int(lt)
+                body = self._expand_range(t, idx + 1, True, loop_infos)
+                # the loop block starts at t, which was already emitted while
+                # scanning [start..idx-1] -> drop that tail before re-emitting
+                out = [(i, c) for (i, c) in out if i < t]
                 count = max(1, int(s.loop_count or 1))
                 iter_ends: list[int] = []
                 for _ in range(count):
-                    out.extend(copy.deepcopy(x) for x in body)
+                    out.extend((oi, copy.deepcopy(c)) for (oi, c) in body)
                     iter_ends.append(len(out) - 1)
                 loop_infos.append({
-                    "loop_to": s.loop_to, "count": count,
+                    "loop_to": t, "count": count,
                     "until": list(s.loop_until or []), "iter_ends": iter_ends,
                 })
             else:
@@ -389,7 +401,7 @@ class Protocol:
                     cpy.loop_to = None
                     cpy.loop_count = 1
                     cpy.loop_until = []
-                out.append(cpy)
+                out.append((idx, cpy))
             idx += 1
         return out
 
