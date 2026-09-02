@@ -1,14 +1,15 @@
-"""Results page -- metrics, per-step maps, V/T CSV and saved-run review.
+"""Results page -- metrics, interactive plot browser, data export and saved-run
+review.
 
-Shows the most recent (or a loaded) run's metrics, its figures and, for
-multi-step protocols, the per-step thermal maps with a selector and the
-per-step metrics table.  Saved runs (from the History page or the dropdown
-below) can be re-reviewed without re-running.
+Shows the most recent (or a loaded) run's metrics, an interactive Plotly plot
+browser (zoom/pan, swappable axes, PNG export), the per-step thermal maps and
+time-series CSV exports, plus saved-run review without re-running.
 """
 import csv
 import io
 from pathlib import Path
 
+import numpy as np
 import streamlit as st
 
 from pouch_cell.ui import common
@@ -163,6 +164,141 @@ with common.page_body():
         c3.metric("T final", _fmt("T_final_K", "{:.1f} K"))
         c4.metric("T rise", _fmt("T_rise_K", "{:.1f} K"))
 
+    # ------------------------------------------------------------------ plot browser
+    st.markdown("#### Plot browser")
+    _rd = Path(last["run_dir"]) if last.get("run_dir") else None
+    _series_csv = (_rd / "series.csv") if _rd else None
+    if _series_csv is None or not _series_csv.is_file():
+        st.caption("No interactive plot data for this run (re-run to enable).")
+    else:
+        import pandas as pd
+        import plotly.graph_objects as go
+
+        _df = pd.read_csv(_series_csv)
+        if _df.empty:
+            st.caption("No interactive plot data for this run (re-run to enable).")
+        else:
+            _LABELS = {
+                "time_s": "Time [s]",
+                "voltage_V": "Voltage [V]",
+                "current_A": "Current [A]",
+                "discharge_capacity_Ah": "Discharge capacity [Ah]",
+                "charge_capacity_Ah": "Charge capacity [Ah]",
+                "throughput_capacity_Ah": "Throughput capacity [Ah]",
+                "energy_Wh": "Energy [Wh]",
+                "charge_energy_Wh": "Charge energy [Wh]",
+                "throughput_energy_Wh": "Throughput energy [Wh]",
+                "power_W": "Power [W]",
+                "temperature_K": "Temperature [K]",
+                "soc": "SOC",
+                "specific_capacity_Ah_per_kg": "Specific capacity [Ah/kg]",
+            }
+            _opts = [c for c in _LABELS if c in _df.columns]
+
+            def _label(c: str) -> str:
+                return _LABELS.get(c, c)
+
+            def _set_axes(x: str, y: str) -> None:
+                st.session_state["pb_x"] = x
+                st.session_state["pb_y"] = y
+
+            _presets = [
+                ("V vs t", "time_s", "voltage_V"),
+                ("I vs t", "time_s", "current_A"),
+                ("V vs Q", "discharge_capacity_Ah", "voltage_V"),
+                ("V vs specific capacity",
+                 "specific_capacity_Ah_per_kg", "voltage_V"),
+                ("Energy vs Q", "discharge_capacity_Ah", "energy_Wh"),
+                ("Power vs t", "time_s", "power_W"),
+                ("T vs t", "time_s", "temperature_K"),
+                ("SOC vs t", "time_s", "soc"),
+            ]
+            _pc = st.columns(len(_presets))
+            for _col, (_lbl, _px, _py) in zip(_pc, _presets):
+                with _col:
+                    st.button(
+                        _lbl, key=f"pb_preset_{_lbl}",
+                        on_click=_set_axes, args=(_px, _py),
+                        help=f"Plot {_label(_py)} vs {_label(_px)}",
+                    )
+
+            c1, c2, c3, c4 = st.columns(4)
+            _x = c1.selectbox(
+                "X variable", _opts,
+                index=_opts.index(st.session_state["pb_x"])
+                if st.session_state.get("pb_x") in _opts else 0,
+                key="pb_x", format_func=_label)
+            _y = c2.selectbox(
+                "Y variable", _opts,
+                index=_opts.index(st.session_state["pb_y"])
+                if st.session_state.get("pb_y") in _opts else
+                (_opts.index("voltage_V") if "voltage_V" in _opts else 0),
+                key="pb_y", format_func=_label)
+            _y2opts = ["(none)"] + _opts
+            _y2 = c3.selectbox(
+                "Secondary Y (optional)", _y2opts, index=0, key="pb_y2",
+                format_func=lambda c: "(none)" if c == "(none)" else _label(c))
+            _unit = c4.selectbox(
+                "Time unit", ["s", "min", "h"], index=0, key="pb_unit")
+
+            # downsample only the interactive chart (CSVs stay full resolution)
+            _n = len(_df)
+            _cap = 20000
+            _d = _df.iloc[np.linspace(0, _n - 1, _cap).astype(int)] if _n > _cap else _df
+
+            _scale = {"s": 1.0, "min": 60.0, "h": 3600.0}[_unit]
+            _xvals = pd.to_numeric(_d[_x], errors="coerce").to_numpy()
+            _xtitle = _label(_x)
+            if _x == "time_s":
+                _xvals = _xvals / _scale
+                _xtitle = f"Time [{_unit}]"
+
+            _fig = go.Figure()
+            _fig.add_trace(go.Scatter(
+                x=_xvals, y=pd.to_numeric(_d[_y], errors="coerce").to_numpy(),
+                mode="lines", name=_label(_y)))
+            if _y2 not in ("(none)", _y):
+                _fig.add_trace(go.Scatter(
+                    x=_xvals,
+                    y=pd.to_numeric(_d[_y2], errors="coerce").to_numpy(),
+                    mode="lines", name=_label(_y2), yaxis="y2"))
+                _fig.update_layout(yaxis2=dict(
+                    title=_label(_y2), overlaying="y", side="right"))
+            _fig.update_layout(
+                xaxis_title=_xtitle, yaxis_title=_label(_y),
+                height=480, margin=dict(t=40, b=40),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1),
+            )
+            st.plotly_chart(
+                _fig, width="stretch",
+                config={"toImageButtonOptions": {"format": "png", "scale": 2},
+                        "displaylogo": False,
+                        "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
+            )
+            st.caption(
+                "Scroll to zoom, drag to pan, double-click to reset. The "
+                "camera button downloads the current view as PNG. Presets set "
+                "the X / Y dropdowns; you can swap either axis to any series."
+            )
+
+            # data export -- the two CSV options
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button(
+                    "Download time-series CSV (key series)",
+                    data=_series_csv.read_bytes(),
+                    file_name="series.csv", mime="text/csv",
+                )
+            _vars_csv = (_rd / "variables.csv") if _rd else None
+            with c2:
+                if _vars_csv is not None and _vars_csv.is_file():
+                    st.download_button(
+                        "Download full-variables CSV",
+                        data=_vars_csv.read_bytes(),
+                        file_name="variables.csv", mime="text/csv",
+                    )
+
     st.markdown("#### Config")
     cfg = st.session_state.config
     proto_label = (f" · protocol=`{last.get('protocol_type', '?')}`"
@@ -234,7 +370,9 @@ with common.page_body():
     run_dir = Path(last["run_dir"]) if last.get("run_dir") else None
     figs = last.get("figures", [])
     step_figs = sorted(f for f in figs if f.startswith("step_"))
-    main_figs = [f for f in figs if not f.startswith("step_")]
+    # the interactive plot browser above replaces the static discharge.png
+    main_figs = [f for f in figs
+                 if not f.startswith("step_") and f != "discharge.png"]
 
     if main_figs:
         cols = st.columns(min(len(main_figs), 2))
@@ -252,16 +390,6 @@ with common.page_body():
         p = (run_dir / sel) if run_dir else None
         if p is not None and p.is_file():
             st.image(str(p), caption=sel, width="stretch")
-
-    # ------------------------------------------------------------------ V/T CSV
-    if run_dir is not None:
-        csv_path = run_dir / "vt.csv"
-        if csv_path.is_file():
-            st.download_button(
-                "Download V/T CSV",
-                data=csv_path.read_text(encoding="utf-8"),
-                file_name="vt.csv", mime="text/csv",
-            )
 
     # ------------------------------------------------------------------ save this run
     c1, c2 = st.columns(2)

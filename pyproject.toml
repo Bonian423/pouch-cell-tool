@@ -16,6 +16,7 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "streamlit>=1.30",     # UI for fast design iteration
+    "plotly>=5.18",        # interactive Results plot browser
 ]
 
 [project.optional-dependencies]

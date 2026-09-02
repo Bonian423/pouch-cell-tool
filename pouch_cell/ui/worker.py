@@ -368,6 +368,15 @@ def main(argv=None) -> int:
         _t_post0 = time.time()
         _write_progress(outdir, status="running", stage="post-processing")
         metrics["figures"] = _save_figures(outdir, sim, sol, config, spec, metrics)
+        # interactive plot-data + full-variable CSVs (best-effort).  The pybamm
+        # Solution is not persisted, so the Results plot browser and the data
+        # export both read these files from the run directory.
+        try:
+            from .plot_data import write_series_csv, write_variables_csv
+            write_series_csv(outdir, sol, sim, spec, config)
+            write_variables_csv(outdir, sol)
+        except Exception:  # noqa: BLE001 - exports are best-effort
+            pass
         metrics["wall_s"] = round(time.time() - t0, 2)
         metrics["sizing_history"] = getattr(sim, "sizing_history", [])
         # record what was *actually* run (thermal maps may have overridden the
