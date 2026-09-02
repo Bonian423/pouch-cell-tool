@@ -385,7 +385,7 @@ def quick_thermal_preview(
                         "reset the parameter overrides."
                     ),
                     "metrics": {}, "note": note, "warning": None}
-        metrics = collect_metrics(sim, sol, config)
+        metrics = collect_metrics(sim, sol, config, spec=spec)
         warning = _preview_voltage_warning(sol, spec)
         fig = plotting.plot_tab_heating(sol, spec, param=sim.param)
         path = QUICK_MAP_DIR / "thermal_preview.png"

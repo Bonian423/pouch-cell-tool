@@ -410,6 +410,29 @@ def load_saved_runs() -> list[dict]:
     return out
 
 
+def saved_run_label(entry: dict) -> str:
+    """One-line summary of a saved run for dropdown labels.
+
+    Includes the energy (``delivered_energy_Wh``) and coulombic efficiency
+    (``coulombic_efficiency_pct``) when present, in addition to the classic
+    V / Ah / Tmax fields.
+    """
+    r = entry.get("result", entry)
+    lbl = (
+        f"{entry.get('saved_at', '?')} · {r.get('model', '?')} · "
+        f"V={r.get('final_V', float('nan')):.2f} · "
+        f"Ah={r.get('delivered_Ah', float('nan')):.2f} · "
+        f"Tmax={r.get('Tmax_K', float('nan')):.1f}"
+    )
+    _wh = r.get("delivered_energy_Wh")
+    _ce = r.get("coulombic_efficiency_pct")
+    if isinstance(_wh, (int, float)) and _wh == _wh:
+        lbl += f" · Wh={_wh:.2f}"
+    if isinstance(_ce, (int, float)) and _ce == _ce:
+        lbl += f" · CE={_ce:.1f}%"
+    return lbl
+
+
 def delete_saved_run(idx: int) -> None:
     """Remove the ``idx``-th saved entry (0-based, ``load_saved_runs`` order)."""
     entries = load_saved_runs()

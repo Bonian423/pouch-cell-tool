@@ -31,6 +31,8 @@ with common.page_body():
                     "type": h.get("protocol_type") or h.get("analysis"),
                     "final_V": h.get("final_V"),
                     "Ah": h.get("delivered_Ah"),
+                    "Wh": h.get("delivered_energy_Wh"),
+                    "CE %": h.get("coulombic_efficiency_pct"),
                     "Tmax_K": h.get("Tmax_K"),
                     "wall_s": h.get("wall_s"),
                     "error": (h.get("error") or "")[:40],
@@ -54,13 +56,7 @@ with common.page_body():
     saved = common.load_saved_runs()
     st.caption(f"{len(saved)} saved run(s) in `{common.HISTORY_FILE}`")
     if saved:
-        labels = [
-            f"{e.get('saved_at', '?')} · {e['result'].get('model', '?')} · "
-            f"V={e['result'].get('final_V', float('nan')):.2f} · "
-            f"Ah={e['result'].get('delivered_Ah', float('nan')):.2f} · "
-            f"Tmax={e['result'].get('Tmax_K', float('nan')):.1f}"
-            for e in saved
-        ]
+        labels = [common.saved_run_label(e) for e in saved]
         choice = st.selectbox("Saved runs", list(reversed(labels)), key="hist_saved")
         idx = len(labels) - 1 - labels.index(choice)
         _res = saved[idx].get("result", {})

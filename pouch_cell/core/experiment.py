@@ -43,11 +43,123 @@ def _temp_metric(sol, metrics: dict) -> None:
             continue
         metrics["Tmax_K"] = float(T.max())
         metrics["T_final_K"] = float(T[..., -1].max())
+        metrics["T_min_K"] = float(T.min())
         return
 
 
-def collect_metrics(sim: PouchCellSimulation, sol, config: RunConfig) -> dict:
-    """Extract the key numbers shown in the UI history / results table."""
+def _time_series(sol, name: str):
+    """Return a 1D time series for a solution variable (spatial mean)."""
+    try:
+        a = np.asarray(sol[name].entries, dtype=float)
+        while a.ndim > 1:
+            a = a.mean(axis=0)
+        return a
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _estimate_cell_mass_kg(sim, spec) -> float | None:
+    """Estimate the electrochemical core mass (kg) from the layer densities.
+
+    Uses the solved parameter values (``sim.param``) for the electrode /
+    separator / collector densities times the stack geometry.  Excludes the
+    pouch and packaging.  Returns ``None`` if the densities are unavailable.
+    """
+    try:
+        param = getattr(sim, "param", None)
+        if param is None or spec is None:
+            return None
+
+        def _rho(name: str) -> float:
+            return float(param[name])
+
+        area = float(spec.width) * float(spec.height)
+        n = int(spec.n_stacks)
+        m_active = n * (
+            float(spec.L_n) * _rho("Negative electrode density [kg.m-3]")
+            + float(spec.L_s) * _rho("Separator density [kg.m-3]")
+            + float(spec.L_p) * _rho("Positive electrode density [kg.m-3]")
+        ) * area
+        m_cc = n * (
+            float(spec.L_cn) * _rho("Negative current collector density [kg.m-3]")
+            + float(spec.L_cp) * _rho("Positive current collector density [kg.m-3]")
+        ) * area
+        return m_active + m_cc
+    except Exception:  # noqa: BLE001 - mass estimate is best-effort
+        return None
+
+
+def _electrical_metrics(sim, sol, spec) -> dict:
+    """Energy / power / capacity-throughput / cycle-efficiency metrics.
+
+    PyBaMM's convention is ``Current [A]`` positive on discharge and negative
+    on charge, so ``P = V * I`` is positive while discharging and negative
+    while charging.  All integrals are trapezoidal over the time series.
+    """
+    out: dict = {}
+    t = _time_series(sol, "Time [s]")
+    V = _time_series(sol, "Voltage [V]")
+    I = _time_series(sol, "Current [A]")
+    if t is None or V is None or I is None or len(t) < 2:
+        return out
+    dt = np.maximum(np.diff(t), 0.0)
+    P = V * I
+    P_mid = 0.5 * (P[:-1] + P[1:])
+    I_mid = 0.5 * (I[:-1] + I[1:])
+    e_disch = float(np.sum(np.maximum(P_mid, 0.0) * dt) / 3600.0)
+    e_chg = float(np.sum(np.maximum(-P_mid, 0.0) * dt) / 3600.0)
+    e_thru = float(np.sum(np.abs(P_mid) * dt) / 3600.0)
+    q_disch = float(np.sum(np.maximum(I_mid, 0.0) * dt) / 3600.0)
+    q_chg = float(np.sum(np.maximum(-I_mid, 0.0) * dt) / 3600.0)
+    q_thru = float(np.sum(np.abs(I_mid) * dt) / 3600.0)
+    duration = float(t[-1] - t[0])
+    out.update({
+        "delivered_energy_Wh": round(e_disch, 4),
+        "charged_energy_Wh": round(e_chg, 4),
+        "throughput_energy_Wh": round(e_thru, 4),
+        "discharge_capacity_Ah": round(q_disch, 4),
+        "charge_capacity_Ah": round(q_chg, 4),
+        "throughput_capacity_Ah": round(q_thru, 4),
+        "peak_power_W": round(float(np.max(np.abs(P))), 2),
+        "initial_V": round(float(V[0]), 4),
+    })
+    if duration > 1e-9:
+        out["average_power_W"] = round(e_thru * 3600.0 / duration, 2)
+    if q_disch > 1e-9:
+        out["mean_voltage_V"] = round(e_disch / q_disch, 4)
+    if q_chg > 1e-9:
+        out["coulombic_efficiency_pct"] = round(100.0 * q_disch / q_chg, 2)
+        out["roundtrip_energy_efficiency_pct"] = round(100.0 * e_disch / e_chg, 2)
+    # per-mass / per-volume figures
+    if spec is not None:
+        nom = float(getattr(spec, "capacity_Ah", 0.0) or 0.0)
+        if nom > 0:
+            out["capacity_utilisation_pct"] = round(100.0 * q_disch / nom, 2)
+        mass_kg = _estimate_cell_mass_kg(sim, spec)
+        if mass_kg:
+            out["cell_mass_g"] = round(mass_kg * 1000.0, 1)
+            out["specific_capacity_Ah_per_kg"] = round(q_disch / mass_kg, 2)
+            out["specific_energy_Wh_per_kg"] = round(e_disch / mass_kg, 2)
+            out["peak_power_density_W_per_kg"] = round(
+                out["peak_power_W"] / mass_kg, 2)
+        vol_m3 = (float(getattr(spec, "width", 0.0) or 0.0)
+                  * float(getattr(spec, "height", 0.0) or 0.0)
+                  * float(getattr(spec, "thickness_total", 0.0) or 0.0))
+        if vol_m3 > 0:
+            out["cell_volume_L"] = round(vol_m3 * 1000.0, 3)
+            out["energy_density_Wh_per_L"] = round(
+                e_disch / (vol_m3 * 1000.0), 2)
+    return out
+
+
+def collect_metrics(sim: PouchCellSimulation, sol, config: RunConfig,
+                    spec=None) -> dict:
+    """Extract the key numbers shown in the UI history / results table.
+
+    Adds the electrical (energy / power / capacity-throughput / cycle
+    efficiency) and specific (per-mass / per-volume) metrics when ``spec``
+    (and the solution variables) are available.
+    """
     V = np.asarray(sol["Voltage [V]"].entries)
     metrics: dict = {
         "model": config.model_name,
@@ -64,6 +176,10 @@ def collect_metrics(sim: PouchCellSimulation, sol, config: RunConfig) -> dict:
     }
     _temp_metric(sol, metrics)
     metrics["final_capacity_Ah"] = metrics["delivered_Ah"]
+    metrics.update(_electrical_metrics(sim, sol, spec))
+    if "Tmax_K" in metrics and spec is not None:
+        amb = float(getattr(spec, "ambient_temperature_K", 298.15) or 298.15)
+        metrics["T_rise_K"] = round(metrics["Tmax_K"] - amb, 2)
     return metrics
 
 
@@ -119,6 +235,22 @@ def collect_step_metrics(sol) -> list[dict]:
                 row["Ah"] = float(
                     np.asarray(step["Discharge capacity [A.h]"].entries)[-1]
                 )
+            except Exception:  # noqa: BLE001
+                pass
+            # per-step energy throughput (Wh, absolute)
+            try:
+                _I_s = np.asarray(step["Current [A]"].entries)
+                _V_s = np.asarray(step["Voltage [V]"].entries)
+                if _I_s.ndim > 1:
+                    _I_s = _I_s.mean(axis=0)
+                if _V_s.ndim > 1:
+                    _V_s = _V_s.mean(axis=0)
+                _tt = np.asarray(step.t)
+                _P = _V_s * _I_s
+                _dtt = np.maximum(np.diff(_tt), 0.0)
+                row["Wh"] = round(
+                    float(np.sum(np.abs(0.5 * (_P[:-1] + _P[1:])) * _dtt)
+                          / 3600.0), 4)
             except Exception:  # noqa: BLE001
                 pass
             I_end = _end_scalar(step, "Current [A]")
@@ -242,7 +374,7 @@ def run_protocol(
     _t0 = time.time()
     sol = sim.run_experiment_obj(experiment, callbacks=callbacks)
     _t_solve = time.time() - _t0
-    metrics = collect_metrics(sim, sol, config)
+    metrics = collect_metrics(sim, sol, config, spec=spec)
     # report the *actually resolved* model/dim/thermal/mesh (the protocol may
     # have forced SPM 2+1D x-lumped for thermal maps)
     metrics["model"] = model
@@ -345,7 +477,7 @@ def run(config: RunConfig, spec: PouchCellSpec | None = None, verbose: bool = Tr
             output_variables=config.output_variables,
             store_first_last=config.store_first_last,
         )
-        metrics = collect_metrics(sim, sol, config)
+        metrics = collect_metrics(sim, sol, config, spec=spec)
         metrics["analysis"] = "tab"
         return sim, sol, metrics
 
@@ -370,5 +502,5 @@ def run(config: RunConfig, spec: PouchCellSpec | None = None, verbose: bool = Tr
         duration_s=config.duration_s,
         cutoff_V=config.cutoff_V,
     )
-    metrics = collect_metrics(sim, sol, config)
+    metrics = collect_metrics(sim, sol, config, spec=spec)
     return sim, sol, metrics

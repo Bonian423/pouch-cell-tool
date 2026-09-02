@@ -346,7 +346,7 @@ def main(argv=None) -> int:
                 solver=make_solver(config.solver),
                 size_to_capacity=config.size_to_capacity,
             )
-            metrics = collect_metrics(sim, sol, config)
+            metrics = collect_metrics(sim, sol, config, spec=spec)
             metrics["analysis"] = "tab"
         else:
             # stream a fast 1D voltage preview first (best-effort) so the UI can

@@ -84,12 +84,7 @@ with common.page_body():
             saved = common.load_saved_runs()
             if saved:
                 st.markdown("#### Or review a saved run")
-                labels = [
-                    f"{e.get('saved_at', '?')} · {e['result'].get('model', '?')} · "
-                    f"V={e['result'].get('final_V', float('nan')):.2f} · "
-                    f"Ah={e['result'].get('delivered_Ah', float('nan')):.2f}"
-                    for e in saved
-                ]
+                labels = [common.saved_run_label(e) for e in saved]
                 choice = st.selectbox("Saved runs", labels, key="res_saved")
                 if st.button("Load into Results", key="res_load"):
                     common.load_result_into_session(saved[labels.index(choice)])
@@ -106,11 +101,67 @@ with common.page_body():
     st.success(f"Run complete in {last.get('wall_s', 0):.1f} s")
 
     # ------------------------------------------------------------------ metrics
+    _M = last
+
+    def _fmt(key: str, fmt: str = "{:.2f}", default: str = "—") -> str:
+        v = _M.get(key)
+        if not isinstance(v, (int, float)) or v != v:  # NaN guard
+            return default
+        return fmt.format(v)
+
+    # headline row (always visible)
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Final voltage", f"{last.get('final_V', float('nan')):.3f} V")
-    c2.metric("Delivered capacity", f"{last.get('delivered_Ah', float('nan')):.2f} Ah")
-    c3.metric("T max", f"{last.get('Tmax_K', float('nan')):.1f} K")
-    c4.metric("T final", f"{last.get('T_final_K', float('nan')):.1f} K")
+    c1.metric("Final voltage", _fmt("final_V", "{:.3f} V"))
+    c2.metric("Delivered capacity", _fmt("delivered_Ah", "{:.2f} Ah"))
+    c3.metric("Energy (discharge)", _fmt("delivered_energy_Wh", "{:.2f} Wh"))
+    c4.metric("Peak power", _fmt("peak_power_W", "{:.1f} W"))
+
+    with st.expander("Electrical", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Initial voltage", _fmt("initial_V", "{:.3f} V"))
+        c2.metric("Mean voltage", _fmt("mean_voltage_V", "{:.3f} V"))
+        c3.metric("Average power", _fmt("average_power_W", "{:.1f} W"))
+        c4.metric("Capacity utilisation",
+                  _fmt("capacity_utilisation_pct", "{:.1f} %"))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Discharge energy",
+                  _fmt("delivered_energy_Wh", "{:.2f} Wh"))
+        c2.metric("Charge energy", _fmt("charged_energy_Wh", "{:.2f} Wh"))
+        c3.metric("Throughput energy",
+                  _fmt("throughput_energy_Wh", "{:.2f} Wh"))
+        c4.metric("Throughput capacity",
+                  _fmt("throughput_capacity_Ah", "{:.2f} Ah"))
+
+    with st.expander("Cycle & efficiency", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Discharge capacity",
+                  _fmt("discharge_capacity_Ah", "{:.2f} Ah"))
+        c2.metric("Charge capacity", _fmt("charge_capacity_Ah", "{:.2f} Ah"))
+        c3.metric("Coulombic efficiency",
+                  _fmt("coulombic_efficiency_pct", "{:.2f} %"))
+        c4.metric("Round-trip energy eff.",
+                  _fmt("roundtrip_energy_efficiency_pct", "{:.2f} %"))
+
+    with st.expander("Specific & energy density", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Cell mass (est.)", _fmt("cell_mass_g", "{:.0f} g"))
+        c2.metric("Specific capacity",
+                  _fmt("specific_capacity_Ah_per_kg", "{:.2f} Ah/kg"))
+        c3.metric("Specific energy",
+                  _fmt("specific_energy_Wh_per_kg", "{:.2f} Wh/kg"))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Energy density",
+                  _fmt("energy_density_Wh_per_L", "{:.1f} Wh/L"))
+        c2.metric("Peak power density",
+                  _fmt("peak_power_density_W_per_kg", "{:.1f} W/kg"))
+        c3.metric("Cell volume", _fmt("cell_volume_L", "{:.3f} L"))
+
+    with st.expander("Thermal", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("T max", _fmt("Tmax_K", "{:.1f} K"))
+        c2.metric("T min", _fmt("T_min_K", "{:.1f} K"))
+        c3.metric("T final", _fmt("T_final_K", "{:.1f} K"))
+        c4.metric("T rise", _fmt("T_rise_K", "{:.1f} K"))
 
     st.markdown("#### Config")
     cfg = st.session_state.config
@@ -140,7 +191,9 @@ with common.page_body():
             [
                 {
                     "cycle": r["cycle"], "step": r["step"],
-                    "t_end_s": r["t_end_s"], "V_end": r["V_end"], "Ah": r["Ah"],
+                    "t_end_s": r["t_end_s"], "V_end": r["V_end"],
+                    "I_end_A": r.get("I_end_A", float("nan")),
+                    "Ah": r["Ah"], "Wh": r.get("Wh", float("nan")),
                     "T_end_K": r.get("T_end_K", float("nan")),
                     "solve_s": r.get("solve_s", float("nan")),
                 }
@@ -148,7 +201,10 @@ with common.page_body():
             ],
             width="stretch", hide_index=True,
         )
-        st.caption("`solve_s` = wall time spent solving that step (seconds).")
+        st.caption(
+            "`solve_s` = wall time spent solving that step (seconds); "
+            "`Wh` = absolute energy processed during that step."
+        )
 
     # ------------------------------------------------------------------ run log & timing
     _tl = last.get("timeline") or {}
@@ -164,17 +220,18 @@ with common.page_body():
             ]
             rows = [r for r in rows if r["seconds"] is not None]
             st.dataframe(rows, width="stretch", hide_index=True)
-            _log = Path(last["run_dir"]) / "log.txt"
-            if _log.is_file():
-                st.download_button(
-                    "Download log.txt",
-                    data=_log.read_text(encoding="utf-8"),
-                    file_name="log.txt", mime="text/plain",
-                )
+            if last.get("run_dir"):
+                _log = Path(last["run_dir"]) / "log.txt"
+                if _log.is_file():
+                    st.download_button(
+                        "Download log.txt",
+                        data=_log.read_text(encoding="utf-8"),
+                        file_name="log.txt", mime="text/plain",
+                    )
 
     # ------------------------------------------------------------------ figures
     st.markdown("#### Figures")
-    run_dir = Path(last["run_dir"])
+    run_dir = Path(last["run_dir"]) if last.get("run_dir") else None
     figs = last.get("figures", [])
     step_figs = sorted(f for f in figs if f.startswith("step_"))
     main_figs = [f for f in figs if not f.startswith("step_")]
@@ -182,8 +239,8 @@ with common.page_body():
     if main_figs:
         cols = st.columns(min(len(main_figs), 2))
         for i, name in enumerate(main_figs):
-            p = run_dir / name
-            if p.is_file():
+            p = (run_dir / name) if run_dir else None
+            if p is not None and p.is_file():
                 with cols[i % 2]:
                     st.image(str(p), caption=name, width="stretch")
     else:
@@ -192,18 +249,19 @@ with common.page_body():
     if step_figs:
         st.markdown("#### Per-step thermal maps")
         sel = st.selectbox("Step map", step_figs, key="res_step_sel")
-        p = run_dir / sel
-        if p.is_file():
+        p = (run_dir / sel) if run_dir else None
+        if p is not None and p.is_file():
             st.image(str(p), caption=sel, width="stretch")
 
     # ------------------------------------------------------------------ V/T CSV
-    csv_path = run_dir / "vt.csv"
-    if csv_path.is_file():
-        st.download_button(
-            "Download V/T CSV",
-            data=csv_path.read_text(encoding="utf-8"),
-            file_name="vt.csv", mime="text/csv",
-        )
+    if run_dir is not None:
+        csv_path = run_dir / "vt.csv"
+        if csv_path.is_file():
+            st.download_button(
+                "Download V/T CSV",
+                data=csv_path.read_text(encoding="utf-8"),
+                file_name="vt.csv", mime="text/csv",
+            )
 
     # ------------------------------------------------------------------ save this run
     c1, c2 = st.columns(2)
@@ -216,12 +274,7 @@ with common.page_body():
     if st.session_state.get("res_show_saved"):
         saved = common.load_saved_runs()
         if saved:
-            labels = [
-                f"{e.get('saved_at', '?')} · {e['result'].get('model', '?')} · "
-                f"V={e['result'].get('final_V', float('nan')):.2f} · "
-                f"Ah={e['result'].get('delivered_Ah', float('nan')):.2f}"
-                for e in saved
-            ]
+            labels = [common.saved_run_label(e) for e in saved]
             choice = st.selectbox("Saved runs", labels, key="res_saved2")
             if st.button("Load", key="res_load2"):
                 common.load_result_into_session(saved[labels.index(choice)])
