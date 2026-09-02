@@ -30,6 +30,22 @@ def build_experiment_steps(
     return [f"Discharge at {C_rate}C until {cutoff_V} V"]
 
 
+def _parallel_scale(spec, dim: int) -> int:
+    """The parallel-stack factor a model must be scaled by.
+
+    PyBaMM's 0D/1D (uniform collector) models honour ``Number of electrodes
+    connected in parallel to make a cell`` through ``A_cc``, so the full cell
+    capacity/current is represented directly.  The 2+1D potential-pair models
+    apply the cell current to a SINGLE layer (the through-plane current density
+    is the total current over the footprint), so ``n_stacks`` does NOT scale the
+    capacity there.  For those, the tool runs the model at the per-stack
+    current and scales the extensive metrics (Ah / Wh / W / A) back up by this
+    factor."""
+    if spec is None or getattr(spec, "n_stacks", 1) <= 1:
+        return 1
+    return int(spec.n_stacks) if int(dim) >= 1 else 1
+
+
 def _temp_metric(sol, metrics: dict) -> None:
     """Best-effort temperature metrics (variable name depends on the model)."""
     for name in (
@@ -89,12 +105,14 @@ def _estimate_cell_mass_kg(sim, spec) -> float | None:
         return None
 
 
-def _electrical_metrics(sim, sol, spec) -> dict:
+def _electrical_metrics(sim, sol, spec, scale: int = 1) -> dict:
     """Energy / power / capacity-throughput / cycle-efficiency metrics.
 
     PyBaMM's convention is ``Current [A]`` positive on discharge and negative
     on charge, so ``P = V * I`` is positive while discharging and negative
     while charging.  All integrals are trapezoidal over the time series.
+    ``scale`` multiplies the extensive quantities (Wh / Ah / W) -- used to
+    convert the single-layer 2+1D model back to the full parallel-stack cell.
     """
     out: dict = {}
     t = _time_series(sol, "Time [s]")
@@ -113,6 +131,13 @@ def _electrical_metrics(sim, sol, spec) -> dict:
     q_chg = float(np.sum(np.maximum(-I_mid, 0.0) * dt) / 3600.0)
     q_thru = float(np.sum(np.abs(I_mid) * dt) / 3600.0)
     duration = float(t[-1] - t[0])
+    # convert the single-layer 2+1D model back to the full parallel-stack cell
+    e_disch *= scale
+    e_chg *= scale
+    e_thru *= scale
+    q_disch *= scale
+    q_chg *= scale
+    q_thru *= scale
     out.update({
         "delivered_energy_Wh": round(e_disch, 4),
         "charged_energy_Wh": round(e_chg, 4),
@@ -120,7 +145,7 @@ def _electrical_metrics(sim, sol, spec) -> dict:
         "discharge_capacity_Ah": round(q_disch, 4),
         "charge_capacity_Ah": round(q_chg, 4),
         "throughput_capacity_Ah": round(q_thru, 4),
-        "peak_power_W": round(float(np.max(np.abs(P))), 2),
+        "peak_power_W": round(float(np.max(np.abs(P))) * scale, 2),
         "initial_V": round(float(V[0]), 4),
     })
     if duration > 1e-9:
@@ -175,15 +200,18 @@ def collect_metrics(sim: PouchCellSimulation, sol, config: RunConfig,
         ),
     }
     _temp_metric(sol, metrics)
+    _s = _parallel_scale(spec, int(getattr(sim, "dimensionality", 0)))
+    if _s > 1:
+        metrics["delivered_Ah"] *= _s
     metrics["final_capacity_Ah"] = metrics["delivered_Ah"]
-    metrics.update(_electrical_metrics(sim, sol, spec))
+    metrics.update(_electrical_metrics(sim, sol, spec, scale=_s))
     if "Tmax_K" in metrics and spec is not None:
         amb = float(getattr(spec, "ambient_temperature_K", 298.15) or 298.15)
         metrics["T_rise_K"] = round(metrics["Tmax_K"] - amb, 2)
     return metrics
 
 
-def collect_step_metrics(sol) -> list[dict]:
+def collect_step_metrics(sol, parallel_scale: int = 1) -> list[dict]:
     """Per-step metrics for a multi-step solution (cycles -> steps).
 
     Each row carries the end-of-step time, voltage, discharge capacity, signed
@@ -266,6 +294,10 @@ def collect_step_metrics(sol) -> list[dict]:
                 row["T_end_hotspot_K"] = T_hot
             if T_volav is not None or T_hot is not None:
                 row["T_end_K"] = T_volav if T_volav is not None else T_hot
+            if parallel_scale > 1:
+                for _k in ("Ah", "Wh", "I_end_A"):
+                    if row.get(_k) is not None and row[_k] == row[_k]:
+                        row[_k] *= parallel_scale
             rows.append(row)
     return rows
 
@@ -311,11 +343,11 @@ def _cond_met(c: dict, row: dict, spec: PouchCellSpec, temp_source: str) -> bool
 
 
 def _posthoc_stop(proto: Protocol, sol, spec: PouchCellSpec,
-                  temp_source: str) -> dict | None:
+                  temp_source: str, parallel_scale: int = 1) -> dict | None:
     """Return ``{"reason", "cycle", "step", "index", "message"}`` for the first
     condition to fire (run-level termination conditions + every loop-until), or
     None.  ``index`` is the number of step rows to keep (exclusive end)."""
-    rows = collect_step_metrics(sol)
+    rows = collect_step_metrics(sol, parallel_scale=parallel_scale)
     if not rows:
         return None
     candidates: list[tuple[int, str]] = []
@@ -365,8 +397,10 @@ def run_protocol(
     model, dim, thermal, mesh = _resolve_protocol_model(config, proto)
     sim = _build_simulation(spec, config, model, dim, thermal, mesh)
     _t_build = time.time() - _t0
+    _s = _parallel_scale(spec, dim)
+    _ref_cap = spec.capacity_Ah / _s
     experiment = pybamm.Experiment(
-        proto.experiment_cycles(spec.capacity_Ah, proto.default_temperature_source),
+        proto.experiment_cycles(_ref_cap, proto.default_temperature_source),
         period=proto.period,
         temperature=proto.run_condition_ambient_K(),
         termination=proto.run_termination_strings(spec) or None,
@@ -383,11 +417,12 @@ def run_protocol(
     metrics["mesh"] = mesh if isinstance(mesh, str) else str(mesh)
     metrics["analysis"] = "protocol"
     metrics["protocol_type"] = proto.type
-    metrics["steps"] = collect_step_metrics(sol)
+    metrics["steps"] = collect_step_metrics(sol, parallel_scale=_s)
     metrics["timeline"] = {"build_s": round(_t_build, 3),
                            "solve_s": round(_t_solve, 3)}
     # post-hoc run-termination / loop-until stop (PyBaMM can't do these at runtime)
-    stop = _posthoc_stop(proto, sol, spec, proto.default_temperature_source)
+    stop = _posthoc_stop(proto, sol, spec, proto.default_temperature_source,
+                         parallel_scale=_s)
     if stop:
         metrics["steps"] = metrics["steps"][: stop["index"]]
         metrics["stopped"] = {k: stop[k]
@@ -419,6 +454,12 @@ def _build_simulation(spec, config, model_name, dimensionality, thermal, mesh):
     if config.extra_overrides:
         from .parameters import apply_parameter_overrides
         apply_parameter_overrides(sim.param, config.extra_overrides)
+    # 2+1D potential-pair models apply the cell current to a single layer, so
+    # use the per-stack nominal capacity reference (the extensive metrics are
+    # scaled back up by n_stacks in collect_metrics / collect_step_metrics).
+    _s = _parallel_scale(spec, dimensionality)
+    if _s > 1:
+        sim.param["Nominal cell capacity [A.h]"] = spec.capacity_Ah / _s
     return sim
 
 

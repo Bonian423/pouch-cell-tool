@@ -202,25 +202,31 @@ with common.page_body():
                 st.session_state["pb_x"] = x
                 st.session_state["pb_y"] = y
 
-            _presets = [
-                ("V vs t", "time_s", "voltage_V"),
-                ("I vs t", "time_s", "current_A"),
-                ("V vs Q", "discharge_capacity_Ah", "voltage_V"),
-                ("V vs specific capacity",
-                 "specific_capacity_Ah_per_kg", "voltage_V"),
-                ("Energy vs Q", "discharge_capacity_Ah", "energy_Wh"),
-                ("Power vs t", "time_s", "power_W"),
-                ("T vs t", "time_s", "temperature_K"),
-                ("SOC vs t", "time_s", "soc"),
-            ]
-            _pc = st.columns(len(_presets))
-            for _col, (_lbl, _px, _py) in zip(_pc, _presets):
-                with _col:
-                    st.button(
-                        _lbl, key=f"pb_preset_{_lbl}",
-                        on_click=_set_axes, args=(_px, _py),
-                        help=f"Plot {_label(_py)} vs {_label(_px)}",
-                    )
+            _presets = {
+                "V vs t": ("time_s", "voltage_V"),
+                "I vs t": ("time_s", "current_A"),
+                "V vs Q": ("discharge_capacity_Ah", "voltage_V"),
+                "V vs specific capacity": (
+                    "specific_capacity_Ah_per_kg", "voltage_V"),
+                "Energy vs Q": ("discharge_capacity_Ah", "energy_Wh"),
+                "Power vs t": ("time_s", "power_W"),
+                "T vs t": ("time_s", "temperature_K"),
+                "SOC vs t": ("time_s", "soc"),
+            }
+
+            def _apply_preset() -> None:
+                _p = st.session_state.get("pb_preset")
+                if _p in _presets:
+                    _set_axes(*_presets[_p])
+                # one-shot: return the dropdown to custom after applying
+                st.session_state["pb_preset"] = "— custom —"
+
+            st.selectbox(
+                "Preset", ["— custom —"] + list(_presets),
+                key="pb_preset", on_change=_apply_preset,
+                help="Apply a ready-made X/Y combination (one-shot); the axis "
+                     "dropdowns below remain the source of truth.",
+            )
 
             c1, c2, c3, c4 = st.columns(4)
             _x = c1.selectbox(
@@ -278,8 +284,8 @@ with common.page_body():
             )
             st.caption(
                 "Scroll to zoom, drag to pan, double-click to reset. The "
-                "camera button downloads the current view as PNG. Presets set "
-                "the X / Y dropdowns; you can swap either axis to any series."
+                "camera button downloads the current view as PNG. The Preset "
+                "dropdown sets the X / Y axes; swap either axis to any series."
             )
 
             # data export -- the two CSV options
@@ -298,6 +304,20 @@ with common.page_body():
                         data=_vars_csv.read_bytes(),
                         file_name="variables.csv", mime="text/csv",
                     )
+
+    # ------------------------------------------------------------------ per-step thermal maps
+    st.markdown("#### Per-step thermal maps")
+    _step_run_dir = Path(last["run_dir"]) if last.get("run_dir") else None
+    _step_figs = sorted(f for f in (last.get("figures") or [])
+                        if f.startswith("step_"))
+    if _step_figs:
+        _sel = st.selectbox("Step map", _step_figs, key="res_step_sel")
+        _sp = (_step_run_dir / _sel) if _step_run_dir else None
+        if _sp is not None and _sp.is_file():
+            st.image(str(_sp), caption=_sel, width="stretch")
+    else:
+        st.caption("No per-step thermal maps for this run (2+1D multi-step "
+                   "runs only).")
 
     st.markdown("#### Config")
     cfg = st.session_state.config
@@ -364,32 +384,6 @@ with common.page_body():
                         data=_log.read_text(encoding="utf-8"),
                         file_name="log.txt", mime="text/plain",
                     )
-
-    # ------------------------------------------------------------------ figures
-    st.markdown("#### Figures")
-    run_dir = Path(last["run_dir"]) if last.get("run_dir") else None
-    figs = last.get("figures", [])
-    step_figs = sorted(f for f in figs if f.startswith("step_"))
-    # the interactive plot browser above replaces the static discharge.png
-    main_figs = [f for f in figs
-                 if not f.startswith("step_") and f != "discharge.png"]
-
-    if main_figs:
-        cols = st.columns(min(len(main_figs), 2))
-        for i, name in enumerate(main_figs):
-            p = (run_dir / name) if run_dir else None
-            if p is not None and p.is_file():
-                with cols[i % 2]:
-                    st.image(str(p), caption=name, width="stretch")
-    else:
-        st.caption("No figures were saved for this run.")
-
-    if step_figs:
-        st.markdown("#### Per-step thermal maps")
-        sel = st.selectbox("Step map", step_figs, key="res_step_sel")
-        p = (run_dir / sel) if run_dir else None
-        if p is not None and p.is_file():
-            st.image(str(p), caption=sel, width="stretch")
 
     # ------------------------------------------------------------------ save this run
     c1, c2 = st.columns(2)

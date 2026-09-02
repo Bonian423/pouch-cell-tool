@@ -109,6 +109,15 @@ def write_series_csv(outdir: Path, sol, sim, spec, config) -> list[str]:
     values = [t, V, I, q_disch, q_chg, q_thru, energy, charge_energy,
               thru_energy, power, T, soc, specific]
 
+    # 2+1D models run at the per-stack current, so scale the extensive
+    # (A / Ah / Wh / W) columns back up to the full parallel-stack cell.
+    from ..core.experiment import _parallel_scale
+    _s = _parallel_scale(spec, int(getattr(sim, "dimensionality", 0)))
+    if _s > 1:
+        for _idx in (2, 3, 4, 5, 6, 7, 8, 9):
+            if values[_idx] is not None:
+                values[_idx] = values[_idx] * _s
+
     with open(outdir / "series.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(cols)
